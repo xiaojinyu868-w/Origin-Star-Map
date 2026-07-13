@@ -130,7 +130,7 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 1px 
 .archive-intro > button:last-child:hover, .ink-action:hover { border-color: var(--vermilion); color: var(--bone); }
 .ink-action:disabled { opacity: .35; }
 
-.observation-stage { position: absolute; z-index: 70; inset: 76px 0 0; display: grid; place-items: center; overflow: auto; overscroll-behavior: contain; padding: 28px max(20px,env(safe-area-inset-right)) 34px; background: rgba(5,6,5,.67); backdrop-filter: blur(7px); animation: veil-in .25s ease both; }
+.observation-stage { position: absolute; z-index: 70; inset: 76px 0 0; display: grid; place-items: start center; overflow: auto; overscroll-behavior: contain; padding: 28px max(20px,env(safe-area-inset-right)) 34px; background: rgba(5,6,5,.67); backdrop-filter: blur(7px); animation: veil-in .25s ease both; }
 .observation-sheet { width: min(720px, 100%); min-height: min(650px, calc(100svh - 130px)); border: 1px solid var(--rule-strong); background: rgba(12,14,11,.97); box-shadow: 0 35px 100px rgba(0,0,0,.58); }
 .observation-sheet > header { height: 54px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px 0 25px; border-bottom: 1px solid var(--rule); }
 .observation-sheet > header p { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--dim); font-size: 8px; letter-spacing: .16em; }
@@ -188,23 +188,34 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 1px 
 .arrange-observation > .ink-action { display: block; margin: 0 auto; }
 
 .sheet-reveal .echo { width: max-content; margin: 0 0 16px; padding-bottom: 5px; border-bottom: 1px solid var(--vermilion); color: var(--vermilion); font: 500 10px var(--serif); letter-spacing: .1em; }
-.sheet-reveal > h2 { max-width: 590px; margin: 0; font: 550 clamp(27px,4vw,42px)/1.45 var(--serif); text-wrap: balance; }
-.field-note { margin-top: 25px; padding: 19px 21px; border-left: 1px solid var(--brass); background: rgba(167,141,101,.045); }
-.field-note > small { color: var(--brass); font-size: 8px; letter-spacing: .16em; }
-.field-note > p { margin: 8px 0 0; color: var(--paper); font: 450 14px/1.7 var(--serif); }
-.field-note details { margin-top: 12px; color: var(--dim); font-size: 9px; }
-.field-note summary { width: max-content; cursor: pointer; }
-.field-note details span { display: block; margin-top: 7px; line-height: 1.55; }
-.departures { margin-top: 26px; }
+.sheet-reveal > h2 { max-width: 590px; margin: 0; font: 550 clamp(27px,4vw,39px)/1.42 var(--serif); text-wrap: balance; }
+.knowledge-scene, .knowledge-explanation { margin-top: 25px; }
+.knowledge-scene { padding: 20px 0 21px; border-top: 1px solid var(--rule-strong); border-bottom: 1px solid var(--rule); }
+.knowledge-scene small, .knowledge-explanation small, .term-shelf > small, .why-card small { display: block; margin-bottom: 8px; color: var(--brass); font-size: 8px; letter-spacing: .16em; }
+.knowledge-scene p { margin: 0; color: var(--bone); font: 450 16px/1.85 var(--serif); }
+.knowledge-explanation { display: grid; grid-template-columns: 86px 1fr; gap: 13px; align-items: start; }
+.knowledge-explanation small { margin-top: 4px; }
+.knowledge-explanation p { margin: 0; color: var(--paper); font: 400 14px/1.8 var(--serif); }
+.term-shelf { margin-top: 22px; }
+.term-shelf > div { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+.term-shelf dl { margin: 0; padding: 13px 14px; border: 1px solid var(--rule); background: rgba(232,225,209,.018); }
+.term-shelf dt { color: var(--bone); font: 550 12px var(--serif); }
+.term-shelf dd { margin: 6px 0 0; color: var(--ash); font: 400 11px/1.65 var(--serif); }
+.why-card { margin-top: 22px; padding: 16px 18px; border-left: 2px solid var(--vermilion); background: rgba(181,75,56,.045); }
+.why-card p { margin: 0; color: var(--paper); font: 450 13px/1.7 var(--serif); }
+.fact-boundary { margin-top: 12px; color: var(--dim); font-size: 9px; }
+.fact-boundary summary { width: max-content; cursor: pointer; }
+.fact-boundary span { display: block; margin-top: 7px; line-height: 1.6; }
+.departures { margin-top: 30px; }
 .departures > header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 9px; }
-.departures > header span { color: var(--bone); font: 500 11px var(--serif); letter-spacing: .12em; }
+.departures > header span { color: var(--bone); font: 500 13px var(--serif); letter-spacing: .04em; }
 .departures > header small { color: var(--dim); font-size: 8px; }
-.departures > button { width: 100%; min-height: 57px; display: grid; grid-template-columns: 70px 1fr auto; align-items: center; gap: 11px; padding: 8px 13px; border: 0; border-top: 1px solid var(--rule); background: transparent; cursor: pointer; text-align: left; }
+.departures > button { width: 100%; min-height: 70px; display: grid; grid-template-columns: 74px minmax(150px,1fr) minmax(140px,.8fr); align-items: center; gap: 13px; padding: 10px 13px; border: 0; border-top: 1px solid var(--rule); background: transparent; cursor: pointer; text-align: left; }
 .departures > button:last-child { border-bottom: 1px solid var(--rule); }
 .departures > button:hover { background: rgba(167,141,101,.05); }
 .departures > button small { color: var(--vermilion); font-size: 8px; letter-spacing: .1em; }
-.departures > button b { font: 500 13px var(--serif); }
-.departures > button span { color: var(--dim); font: 400 10px var(--serif); }
+.departures > button b { color: var(--bone); font: 550 14px/1.5 var(--serif); }
+.departures > button span { color: var(--ash); font: 400 10px/1.55 var(--serif); }
 
 .archive-drawer { position: absolute; z-index: 72; inset: 76px 0 0 auto; width: min(470px,100%); overflow-y: auto; overscroll-behavior: contain; padding: 33px 35px max(34px,env(safe-area-inset-bottom)); border-left: 1px solid var(--rule-strong); background: rgba(11,13,10,.98); box-shadow: -40px 0 100px rgba(0,0,0,.5); }
 .archive-drawer > header { display: flex; justify-content: space-between; padding-bottom: 25px; border-bottom: 1px solid var(--rule); }
@@ -263,12 +274,15 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 1px 
   .question-entry input { border-left: 0; padding-left: 5px; }
   .archive-intro { left: 15px; width: calc(100% - 30px); padding: 35px 28px 37px; }
   .archive-intro h1 { font-size: 36px; }
-  .observation-stage { align-items: end; padding: 16px 0 0; }
+  .observation-stage { align-items: start; padding: 16px 0 0; }
   .observation-sheet { min-height: 82svh; border-width: 1px 0 0; }
   .sheet-summary, .sheet-observe, .sheet-reveal { padding: 32px 24px 42px; }
   .observation-choices { grid-template-columns: 1fr; }
   .observation-choices button { min-height: 57px; }
   .observation-choices button::before { display: inline; margin-right: 12px; }
+  .knowledge-explanation { grid-template-columns: 1fr; gap: 0; }
+  .knowledge-explanation small { margin-top: 0; }
+  .term-shelf > div { grid-template-columns: 1fr; }
   .departures > button { grid-template-columns: 64px 1fr; }
   .departures > button span { grid-column: 2; }
   .archive-drawer { inset: 66px 0 0; width: 100%; padding: 28px 24px; }

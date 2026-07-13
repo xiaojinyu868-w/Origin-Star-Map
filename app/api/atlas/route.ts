@@ -201,7 +201,7 @@ export async function POST(request: Request) {
       const graded = gradeEncounter(state, body);
       const result = await callQwen(
         apiKey,
-        `你是《星火档案》的无名策展人。根据固定判定完成一页档案。
+        `你是《星火档案》的知识编辑。根据固定判定完成一页让陌生人真正学会东西的微型百科。
 观测：${state.signal}
 问题：${state.question}
 玩家动作：${graded.answer}
@@ -212,37 +212,54 @@ export async function POST(request: Request) {
 边界：${state.caveat}
 已经走过的领域：${JSON.stringify(state.map_fields)}
 
-写作纪律：
-- echo是对玩家动作的温和回应，不说“正确/错误”。
-- reveal只有一句，先写具体变化，再落到认识；准确、克制、有余韵。
-- 不把基因、分子、城市或算法写成人，不说它们“选择、渴望、谈判、记住”了什么；诗意不能牺牲准确。
-- 禁用：显著、赋能、重塑、深层、揭示、机制、背后、系统性、颠覆、神奇、竟然、无声的契约、完成复制。
-- 生成3条去向：deeper继续凝视；bridge横渡到意外学科；wild去尚未接触的远方。
-- 名称像一件具体标本、一个动作或一个场景，不写课程标题，不全用疑问句。
-- promise只写下一次会亲眼看到什么。
+知识编辑纪律：
+- 假设读者是聪明但对该领域一无所知的高中毕业生。任何人名、制度、实验、年代或术语第一次出现时都要顺手解释，不能靠读者预习。
+- answer_title直接用白话回答问题，像百科条目的小标题，不写格言、隐喻或文学判断。
+- scene用2至4个短句还原一个具体现场。尽量出现“谁、在什么处境、做了什么、结果怎样”；历史题给出时代与人物位置，科学题给出可想象的物体、尺度或实验动作。
+- explanation再用白话讲清因果链。每句话只承担一个意思，禁止把五个抽象名词压进一句话。
+- terms最多2个，只收录不解释就会挡住理解的词；meaning像给朋友解释，不可用另一个生词兜圈。
+- 不夹未经解释的英文、拉丁文或缩写；能用准确中文就直接用中文。
+- why_it_matters说明这件知识改变了我们看待什么，不写宏大口号。
+- echo只回应玩家刚才的动作，不说“正确/错误”。
+- 不把基因、分子、城市或算法写成人，不说它们“选择、渴望、谈判、记住”了什么。
+- 禁用文案腔：身份即被铸入、抽象天赋、资产总和、显著、赋能、重塑、深层、揭示、机制、背后、系统性、颠覆、神奇、竟然、无声的契约、完成复制。
+- 生成3条去向：deeper留在当前问题；bridge换一个熟悉角度；wild跳到遥远领域。name必须写成普通人一眼能懂、想点开的具体问题，优先使用“为什么/怎样/如果”；不能只丢出“百夫队投票权重”式名词。
+- promise用一句白话说明点进去会看见什么。如果name不可避免地含有生词，promise必须当场解释这个词。
 
 输出JSON：
 {
   "echo":"8至18字",
-  "reveal":"24至52字",
-  "spark":{"title":"4至10字","field":"真实领域","insight":"18至38字"},
+  "answer_title":"10至24字，直接回答本题",
+  "scene":"70至130字，2至4个短句的具体现场",
+  "explanation":"45至90字，白话因果解释",
+  "terms":[{"term":"2至8字","meaning":"18至38字的白话解释"}],
+  "why_it_matters":"28至55字",
+  "spark":{"title":"4至10字","field":"真实领域","insight":"18至38字，读者可以复述的白话结论"},
   "profile_signal":"10至22字，描述玩家反复偏爱的提问角度",
   "next_nodes":[
-    {"name":"4至12字","field":"领域","sector":"六类之一","promise":"7至18字","kind":"deeper","connection_reason":"10至22字"},
-    {"name":"4至12字","field":"领域","sector":"六类之一","promise":"7至18字","kind":"bridge","connection_reason":"10至22字"},
-    {"name":"4至12字","field":"领域","sector":"六类之一","promise":"7至18字","kind":"wild","connection_reason":"10至22字"}
+    {"name":"8至18字的具体问题","field":"领域","sector":"六类之一","promise":"12至26字","kind":"deeper","connection_reason":"10至22字"},
+    {"name":"8至18字的具体问题","field":"领域","sector":"六类之一","promise":"12至26字","kind":"bridge","connection_reason":"10至22字"},
+    {"name":"8至18字的具体问题","field":"领域","sector":"六类之一","promise":"12至26字","kind":"wild","connection_reason":"10至22字"}
   ]
 }`,
         `请为这次观测归档。判定必须保持为${graded.verdict}。`,
         0.7,
       );
       const spark = result.spark as Record<string, unknown> | undefined;
+      const terms = Array.isArray(result.terms) ? result.terms.slice(0, 2).map((item) => {
+        const entry = item as Record<string, unknown>;
+        return { term: String(entry.term || "").slice(0, 16), meaning: String(entry.meaning || "").slice(0, 60) };
+      }).filter((item) => item.term && item.meaning) : [];
       const nextNodes = Array.isArray(result.next_nodes) ? result.next_nodes.slice(0, 3) : [];
-      if (!result.echo || !result.reveal || !spark?.title || !spark.insight || nextNodes.length !== 3) throw new Error("Resolution incomplete");
+      if (!result.echo || !result.answer_title || !result.scene || !result.explanation || !result.why_it_matters || !spark?.title || !spark.insight || nextNodes.length !== 3) throw new Error("Resolution incomplete");
       return NextResponse.json({
         verdict: graded.verdict,
         echo: String(result.echo).slice(0, 24),
-        reveal: String(result.reveal).slice(0, 64),
+        answer_title: String(result.answer_title).slice(0, 40),
+        scene: String(result.scene).slice(0, 180),
+        explanation: String(result.explanation).slice(0, 130),
+        terms,
+        why_it_matters: String(result.why_it_matters).slice(0, 90),
         spark: { title: String(spark.title).slice(0, 24), field: String(spark.field || state.node.field).slice(0, 30), insight: String(spark.insight).slice(0, 48) },
         profile_signal: String(result.profile_signal || "喜欢从微小差异追踪变化").slice(0, 50),
         source_note: `${state.source_anchor} · ${state.caveat}`.slice(0, 90),

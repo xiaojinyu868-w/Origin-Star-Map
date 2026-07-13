@@ -15,7 +15,7 @@ type Constellation = { id: string; name: string; line: string; motif: string; no
 type AtlasState = { version: 5; nodes: AtlasNode[]; edges: AtlasEdge[]; profileSignals: string[]; expeditions: number; constellations: Constellation[] };
 type Encounter = { signal: string; question: string; interaction: Interaction; choices: string[]; scale: { left: string; right: string } | null; items: string[]; visual: "pulse" | "orbit" | "split" | "network" | "scale"; token: string };
 type NextNode = { name: string; field: string; sector: SectorKey; promise: string; kind: "deeper" | "bridge" | "wild"; connection_reason: string };
-type Resolution = { verdict: Verdict; echo: string; reveal: string; spark: Spark; profile_signal: string; source_note: string; next_nodes: NextNode[] };
+type Resolution = { verdict: Verdict; echo: string; answer_title: string; scene: string; explanation: string; terms: Array<{ term: string; meaning: string }>; why_it_matters: string; spark: Spark; profile_signal: string; source_note: string; next_nodes: NextNode[] };
 type PanelStage = "summary" | "loading" | "observe" | "resolving" | "reveal";
 type EngineState = "checking" | "ready" | "offline";
 
@@ -258,7 +258,16 @@ export function CuriosityGame() {
 
           {stage === "resolving" ? <div className="sheet-loading"><div className="orrery resolving" aria-hidden="true"><i /><i /></div><p>墨迹正在沿着你的判断扩散……</p></div> : null}
 
-          {stage === "reveal" && resolution ? <div className="sheet-reveal"><p className="echo">{resolution.echo}</p><h2>{resolution.reveal}</h2><div className="field-note"><small>带回的句子</small><p>{resolution.spark.insight}</p><details><summary>事实边界</summary><span>{resolution.source_note}</span></details></div><div className="departures"><header><span>从这里离开</span><small>只取一条路</small></header>{resolution.next_nodes.map((route) => <button type="button" key={`${route.kind}-${route.name}`} onClick={() => chooseRoute(route)}><small>{route.kind === "deeper" ? "继续凝视" : route.kind === "bridge" ? "横渡" : "远行"}</small><b>{route.name}</b><span>{route.promise}</span></button>)}</div></div> : null}
+          {stage === "reveal" && resolution ? <article className="sheet-reveal">
+            <p className="echo">{resolution.echo}</p>
+            <h2>{resolution.answer_title}</h2>
+            <section className="knowledge-scene"><small>先看现场</small><p>{resolution.scene}</p></section>
+            <section className="knowledge-explanation"><small>用白话说</small><p>{resolution.explanation}</p></section>
+            {resolution.terms.length ? <section className="term-shelf"><small>第一次见到这些词</small><div>{resolution.terms.map((item) => <dl key={item.term}><dt>{item.term}</dt><dd>{item.meaning}</dd></dl>)}</div></section> : null}
+            <aside className="why-card"><small>为什么值得记住</small><p>{resolution.why_it_matters}</p></aside>
+            <details className="fact-boundary"><summary>依据与边界</summary><span>{resolution.source_note}</span></details>
+            <div className="departures"><header><span>接下来，你想弄懂哪件事？</span><small>只取一条路</small></header>{resolution.next_nodes.map((route) => <button type="button" key={`${route.kind}-${route.name}`} onClick={() => chooseRoute(route)}><small>{route.kind === "deeper" ? "继续看" : route.kind === "bridge" ? "换个角度" : "跳到远处"}</small><b>{route.name}</b><span>{route.promise}</span></button>)}</div>
+          </article> : null}
         </div>
       </section> : null}
 
