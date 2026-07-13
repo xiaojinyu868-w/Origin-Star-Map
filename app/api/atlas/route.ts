@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 type SectorKey = "life" | "mind" | "society" | "matter" | "creation" | "systems";
 type Verdict = "hit" | "near" | "twist";
 type Interaction = "choice" | "scale" | "arrange";
+type ChoiceVisual = { value: number; uncertainty: number; annotation: string };
+type VisualContext = { measure: string; unit: string; baseline_label: string; changed_label: string; baseline_value: number };
 
 type AtlasNode = { id?: string; name: string; field: string; hook: string; sector?: SectorKey };
 type AtlasRequest = {
@@ -16,6 +18,7 @@ type AtlasRequest = {
   token?: string;
   recent_nodes?: Array<{ name: string; field: string; spark?: string }>;
   profile_signals?: string[];
+  existing_names?: string[];
 };
 
 type EncounterState = {
@@ -25,6 +28,8 @@ type EncounterState = {
   interaction: Interaction;
   choices: string[];
   choice_verdicts: Verdict[];
+  choice_visuals: ChoiceVisual[];
+  visual_context: VisualContext | null;
   scale: { left: string; right: string; target: number; tolerance: number } | null;
   items: string[];
   target_order: string[];
@@ -139,6 +144,12 @@ export async function POST(request: Request) {
 - 如果name带有隐喻，以hook中的具体问题为准；玩家结束后应能回答hook，而不是只学到一个相邻事实。
 - signal是可观察的具体情景，不使用“你知道吗”，不写背景讲义。
 - question邀请一个动作，不能要求背术语。
+- choices必须让第一次接触该领域的人直接看懂。用可见结果说话，例如“两边次数越试越接近”，不要写“概率波函数、次线性标度、涌现、熵增”这类需要先上课的词。
+- 结束时，玩家应获得一个原先问不出来的后续问题，而不只是记住一条结论。
+- choice必须生成一张可以读懂的“假设比较图”，而不是装饰插画。visual_context定义同一张图的测量对象、单位与变化前后；choice_visuals把三个答案映射到同一纵轴。
+- visual_context中的measure、baseline_label、changed_label也必须使用普通人一眼能懂的可见量，例如“两边次数有多接近”，不能使用“吻合度、效应强度、综合指数”这类没有直观含义的自造指标。
+- baseline_value与三个value都使用0至100的共享绘图刻度。请挑选baseline_value，使三种假设的相对高低都能看清。它们不是伪造的百分比；真实倍数、百分比或范围必须写进annotation。
+- uncertainty只表示选项本身声称的波动或不确定范围；没有范围含义时填0。三个value与annotation必须忠实对应三个choices，不能随机装饰。
 - 必须来自可重复实验、稳定规律或明确机制，并保留事实锚点与边界。
 - 不把相关写成因果，不把假说写成定论；有争议就换一个更可靠的现象。
 - 禁用模型腔与宣传腔：显著、赋能、重塑、深层、揭示、背后逻辑、系统性、颠覆、神奇、竟然。
@@ -151,6 +162,8 @@ export async function POST(request: Request) {
   "interaction":"choice或scale或arrange",
   "choices":["仅choice填写3项，每项5至16字"],
   "choice_verdicts":["仅choice填写，与选项对应，hit、near、twist各一次"],
+  "visual_context":{"measure":"仅choice填写，纵轴正在测量什么，2至10字","unit":"真实单位；没有可靠绝对数值就写相对尺度","baseline_label":"变化前的具体条件，2至10字","changed_label":"变化后的具体条件，2至10字","baseline_value":"0至100整数"},
+  "choice_visuals":[{"value":"与该选项对应的0至100绘图位置","uncertainty":"0至25整数","annotation":"该选项声称的真实变化，3至12字"}],
   "scale":{"left":"2至6字","right":"2至6字","target":0至100整数,"tolerance":8至18整数},
   "items":["仅arrange填写3项，每项3至10字"],
   "target_order":["仅arrange填写真实顺序"],
@@ -167,6 +180,23 @@ export async function POST(request: Request) {
       const interaction = ["choice", "scale", "arrange"].includes(String(result.interaction)) ? String(result.interaction) as Interaction : "choice";
       const choices = Array.isArray(result.choices) ? result.choices.slice(0, 3).map((item) => String(item).slice(0, 20)) : [];
       const verdicts = Array.isArray(result.choice_verdicts) ? result.choice_verdicts.slice(0, 3).map(String) as Verdict[] : [];
+      const rawChoiceVisuals = Array.isArray(result.choice_visuals) ? result.choice_visuals.slice(0, 3) : [];
+      const choiceVisuals: ChoiceVisual[] = choices.map((_, index) => {
+        const entry = (rawChoiceVisuals[index] || {}) as Record<string, unknown>;
+        return {
+          value: Math.max(5, Math.min(95, Number(entry.value) || 28 + index * 26)),
+          uncertainty: Math.max(0, Math.min(25, Number(entry.uncertainty) || 0)),
+          annotation: String(entry.annotation || choices[index] || "一种可能").slice(0, 18),
+        };
+      });
+      const rawVisualContext = result.visual_context as Record<string, unknown> | undefined;
+      const visualContext: VisualContext | null = interaction === "choice" ? {
+        measure: String(rawVisualContext?.measure || "结果变化").slice(0, 14),
+        unit: String(rawVisualContext?.unit || "相对尺度").slice(0, 12),
+        baseline_label: String(rawVisualContext?.baseline_label || "变化前").slice(0, 14),
+        changed_label: String(rawVisualContext?.changed_label || "变化后").slice(0, 14),
+        baseline_value: Math.max(5, Math.min(95, Number(rawVisualContext?.baseline_value) || 50)),
+      } : null;
       const rawScale = result.scale as Record<string, unknown> | undefined;
       const scale = rawScale ? { left: String(rawScale.left || "更少").slice(0, 8), right: String(rawScale.right || "更多").slice(0, 8), target: Math.max(0, Math.min(100, Number(rawScale.target || 50))), tolerance: Math.max(8, Math.min(18, Number(rawScale.tolerance || 12))) } : null;
       const items = Array.isArray(result.items) ? result.items.slice(0, 3).map((item) => String(item).slice(0, 14)) : [];
@@ -181,6 +211,8 @@ export async function POST(request: Request) {
         interaction,
         choices,
         choice_verdicts: verdicts,
+        choice_visuals: choiceVisuals,
+        visual_context: visualContext,
         scale,
         items,
         target_order: targetOrder,
@@ -191,7 +223,7 @@ export async function POST(request: Request) {
         caveat: String(result.caveat),
         map_fields: mapFields,
       };
-      return NextResponse.json({ signal: state.signal, question: state.question, interaction: state.interaction, choices: state.choices, scale: state.scale ? { left: state.scale.left, right: state.scale.right } : null, items: state.items, visual: state.visual, token: await seal(state, apiKey) });
+      return NextResponse.json({ signal: state.signal, question: state.question, interaction: state.interaction, choices: state.choices, choice_visuals: state.choice_visuals, visual_context: state.visual_context, scale: state.scale ? { left: state.scale.left, right: state.scale.right } : null, items: state.items, visual: state.visual, token: await seal(state, apiKey) });
     }
 
     if (body.mode === "resolve") {
@@ -219,8 +251,9 @@ export async function POST(request: Request) {
 - explanation再用白话讲清因果链。每句话只承担一个意思，禁止把五个抽象名词压进一句话。
 - terms最多2个，只收录不解释就会挡住理解的词；meaning像给朋友解释，不可用另一个生词兜圈。
 - 不夹未经解释的英文、拉丁文或缩写；能用准确中文就直接用中文。
-- why_it_matters说明这件知识改变了我们看待什么，不写宏大口号。
-- echo只回应玩家刚才的动作，不说“正确/错误”。
+- why_it_matters必须写成一个玩家今后真的能使用的提问句式，优先使用“以后看到……，先问……，而不是……”；不要泛泛说“很重要”。
+- transfer换一个高中毕业生日常可见的场景，展示同一关系还能解释什么。必须具体到人、物体、数字或动作，不能只换一组抽象名词。
+- echo只回应玩家刚才的动作，不说“正确/错误”，但要点明玩家押中了什么或忽略了哪一个变量，让反馈有抓力。
 - 不把基因、分子、城市或算法写成人，不说它们“选择、渴望、谈判、记住”了什么。
 - 禁用文案腔：身份即被铸入、抽象天赋、资产总和、显著、赋能、重塑、深层、揭示、机制、背后、系统性、颠覆、神奇、竟然、无声的契约、完成复制。
 - 生成3条去向：deeper留在当前问题；bridge换一个熟悉角度；wild跳到遥远领域。bridge与wild必须优先选择“已经走过的领域”之外的学科，并且彼此也不能属于同一领域；目标是帮助玩家逐渐点亮100个不同领域，而不是在少数主题里打转。
@@ -235,6 +268,7 @@ export async function POST(request: Request) {
   "explanation":"45至90字，白话因果解释",
   "terms":[{"term":"2至8字","meaning":"18至38字的白话解释"}],
   "why_it_matters":"28至55字",
+  "transfer":"28至60字，以‘这也能解释’或具体追问开头的日常迁移例子",
   "spark":{"title":"4至10字","field":"真实领域","insight":"18至38字，读者可以复述的白话结论"},
   "profile_signal":"10至22字，描述玩家反复偏爱的提问角度",
   "next_nodes":[
@@ -252,7 +286,7 @@ export async function POST(request: Request) {
         return { term: String(entry.term || "").slice(0, 16), meaning: String(entry.meaning || "").slice(0, 60) };
       }).filter((item) => item.term && item.meaning) : [];
       const nextNodes = Array.isArray(result.next_nodes) ? result.next_nodes.slice(0, 3) : [];
-      if (!result.echo || !result.answer_title || !result.scene || !result.explanation || !result.why_it_matters || !spark?.title || !spark.insight || nextNodes.length !== 3) throw new Error("Resolution incomplete");
+      if (!result.echo || !result.answer_title || !result.scene || !result.explanation || !result.why_it_matters || !result.transfer || !spark?.title || !spark.insight || nextNodes.length !== 3) throw new Error("Resolution incomplete");
       return NextResponse.json({
         verdict: graded.verdict,
         echo: String(result.echo).slice(0, 24),
@@ -261,6 +295,7 @@ export async function POST(request: Request) {
         explanation: String(result.explanation).slice(0, 130),
         terms,
         why_it_matters: String(result.why_it_matters).slice(0, 90),
+        transfer: String(result.transfer).slice(0, 110),
         spark: { title: String(spark.title).slice(0, 24), field: String(spark.field || state.node.field).slice(0, 30), insight: String(spark.insight).slice(0, 48) },
         profile_signal: String(result.profile_signal || "喜欢从微小差异追踪变化").slice(0, 50),
         source_note: `${state.source_anchor} · ${state.caveat}`.slice(0, 90),
@@ -279,10 +314,11 @@ export async function POST(request: Request) {
         apiKey,
         `你是《星火档案》的星座命名者。根据一个人最近走过的3至4个知识标本，发现其反复追逐的“问题形状”。
 - 名称应像真正的星座名：具体、含蓄、可记忆，不是人格测试，不使用“型/者/主义”。
+- 名称不得与已经出现的星座同名或仅有一字之差；优先从这一次独有的动作、物体或矛盾中取名。
 - line用第二人称指出这些看似无关的探索为何属于同一条好奇心；必须提到一项能从标本中看见的具体动作或矛盾，不能只堆抽象形容词。
 - 描述提问习惯，不评判人格。禁用：AI、算法、机制、系统、深层、揭示、痴迷于、无主秩序、脆弱而坚韧、动态平衡。
 输出JSON：{"name":"4至9字，末尾可含星座","line":"18至38字","motif":"4至10字的好奇母题"}`,
-        `最近标本：${JSON.stringify(recent)}\n提问痕迹：${JSON.stringify(body.profile_signals?.slice(-6) || [])}`,
+        `最近标本：${JSON.stringify(recent)}\n提问痕迹：${JSON.stringify(body.profile_signals?.slice(-6) || [])}\n已经使用过的名称（不得重复）：${JSON.stringify(body.existing_names?.slice(-20) || [])}`,
         0.78,
       );
       if (!result.name || !result.line) throw new Error("Constellation incomplete");

@@ -23,10 +23,12 @@ test("server-renders the personal knowledge atlas", async () => {
   assert.match(html, /星火档案/);
   assert.match(html, /个人知识天球图/);
   assert.match(html, /未完成问题的天球图/);
+  assert.match(html, /AI 能回答几乎一切/);
+  assert.match(html, /不能替你拥有问题/);
   assert.match(html, /你被一个专业录取/);
-  assert.match(html, /世界不止一个专业/);
+  assert.match(html, /为什么刷短视频/);
   assert.match(html, /百门计划/);
-  assert.match(html, /写下一件你最近无法解释的事/);
+  assert.match(html, /把一个真实困惑变成知识入口/);
 });
 
 test("keeps DashScope behind the server-side atlas API", async () => {
@@ -41,7 +43,11 @@ test("keeps DashScope behind the server-side atlas API", async () => {
   assert.match(api, /mode === "resolve"/);
   assert.match(api, /mode === "constellation"/);
   assert.match(api, /mode === "chart"/);
+  assert.match(api, /choice_visuals/);
+  assert.match(api, /visual_context/);
   assert.match(api, /qwen3\.7-plus/);
+  assert.match(game, /ObservationInstrument/);
+  assert.match(game, /ChoiceHypothesisGraphic/);
   assert.doesNotMatch(game, /DASHSCOPE_API_KEY|sk-[a-zA-Z0-9]/);
   assert.match(envExample, /DASHSCOPE_API_KEY=/);
   assert.doesNotMatch(envExample, /DASHSCOPE_API_KEY=sk-/);
