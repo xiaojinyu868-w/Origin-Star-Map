@@ -5,6 +5,7 @@ type AtlasNode = {
   name: string;
   field: string;
   hook: string;
+  sector?: "life" | "mind" | "society" | "matter" | "creation" | "systems";
 };
 
 type AtlasRequest = {
@@ -18,10 +19,15 @@ type AtlasRequest = {
 
 type EncounterState = {
   node: AtlasNode;
-  scene: string;
+  signal: string;
   question: string;
+  choices: string[];
+  choice_verdicts: Array<"hit" | "near" | "twist">;
+  visual: "pulse" | "orbit" | "split" | "network" | "scale";
   concept: string;
   concept_explanation: string;
+  source_anchor: string;
+  caveat: string;
   map_fields: string[];
 };
 
@@ -124,45 +130,59 @@ export async function POST(request: Request) {
       const mapFields = body.map?.fields?.slice(0, 24) || [];
       const result = await callQwen(
         apiKey,
-        `你是《星火档案》的AI知识策展人。玩家正在通过个人星图广泛接触陌生领域，而不是系统学习一门课程。
+        `你是知识探索游戏《星火档案》的关卡生成器。你不是老师，任务是制造一个让人忍不住下注的短回合。
 
-请围绕指定知识星生成一次2分钟的微远征：
-- 从一个具体、反常识、能让人产生直觉判断的现象开始。
-- 不要先解释概念，不要使用课堂口吻，不要写成长故事。
-- 问题必须允许普通人凭直觉回答，没有标准术语也能参与。
-- 暗中选定一个真实可靠的知识概念，供下一步解释。
-- quick_starts只是帮助不知道说什么的人起步，不能替代自由回答。
+围绕指定知识星生成一次20秒挑战：
+- signal必须是一条反常识事实，像游戏中的异常警报，不铺垫背景。
+- signal必须来自可重复的经典实验、稳定统计规律或明确机制；先在内部找到实验锚点，再写题。
+- question必须要求预测“条件改变后会发生什么”，不能问开放式“为什么”，也不要只复述signal。
+- 三个choices都要听起来合理、互相排斥、字数相近，玩家无需专业知识。
+- 其中至少一个选项应利用常见直觉误区，但不能故意文字欺骗。
+- 暗中保留真实概念和准确解释，下一步用于判定。
+- 禁止网络流行神话和绝对化因果。例如：不能说没有颜色词就看不见颜色，只能陈述可靠的辨别速度或分类差异；不能把相关性写成因果；不能写“某假说已被证实”。
+- 如果指定星球的流行说法有争议，必须改用同领域更可靠、更具体的实验。
+- 禁止课堂口吻、长故事、定义罗列和“你知道吗”。
 
 必须输出合法JSON：
 {
-  "scene":"60至100字，具体而有画面感的现象",
-  "question":"20至45字，让玩家预测、比较或解释",
-  "quick_starts":["三个不同方向的第一人称直觉，每项10至22字"],
+  "signal":"25至45字的异常事实",
+  "question":"12至28字的预测题",
+  "choices":["三个选项，每项6至18字"],
+  "choice_verdicts":["与三个选项逐项对应，hit、near、twist各出现一次"],
+  "visual":"pulse、orbit、split、network、scale五选一",
   "concept":"真实知识概念，4至16字",
-  "concept_explanation":"80至130字，准确说明概念及其边界"
+  "concept_explanation":"40至75字，准确解释结果",
+  "source_anchor":"实验、效应或稳定规律的名称，8至30字",
+  "caveat":"15至35字，指出不能由此推出什么"
 }`,
         `知识星：${JSON.stringify(body.node)}\n玩家已接触领域：${JSON.stringify(mapFields)}`,
         0.8,
       );
 
-      if (!result.scene || !result.question || !result.concept || !result.concept_explanation) {
+      const choices = Array.isArray(result.choices) ? result.choices.slice(0, 3).map((item) => String(item).slice(0, 20)) : [];
+      const choiceVerdicts = Array.isArray(result.choice_verdicts) ? result.choice_verdicts.slice(0, 3).map(String) : [];
+      const visual = ["pulse", "orbit", "split", "network", "scale"].includes(String(result.visual)) ? String(result.visual) as EncounterState["visual"] : "pulse";
+      if (!result.signal || !result.question || !result.concept || !result.concept_explanation || !result.source_anchor || !result.caveat || choices.length !== 3 || !["hit", "near", "twist"].every((grade) => choiceVerdicts.includes(grade))) {
         throw new Error("Encounter incomplete");
       }
-      const quickStarts = Array.isArray(result.quick_starts)
-        ? result.quick_starts.slice(0, 3).map((item) => String(item).slice(0, 50))
-        : [];
       const state: EncounterState = {
         node: body.node,
-        scene: String(result.scene),
-        question: String(result.question),
+        signal: String(result.signal).slice(0, 55),
+        question: String(result.question).slice(0, 32),
+        choices,
+        choice_verdicts: choiceVerdicts as EncounterState["choice_verdicts"],
+        visual,
         concept: String(result.concept),
         concept_explanation: String(result.concept_explanation),
+        source_anchor: String(result.source_anchor),
+        caveat: String(result.caveat),
         map_fields: mapFields,
       };
       return NextResponse.json({
-        scene: state.scene,
+        signal: state.signal,
         question: state.question,
-        quick_starts: quickStarts,
+        choices: state.choices,
+        visual: state.visual,
         token: await seal(state, apiKey),
       });
     }
@@ -172,62 +192,76 @@ export async function POST(request: Request) {
       if (!answer || !body.token) return NextResponse.json({ error: "请先留下你的直觉" }, { status: 400 });
       const state = await unseal(body.token, apiKey);
       if (!state) return NextResponse.json({ error: "这次远征已经失去信号" }, { status: 400 });
+      const answerIndex = state.choices.findIndex((choice) => choice === answer);
+      const expectedVerdict = answerIndex >= 0 && Array.isArray(state.choice_verdicts) ? state.choice_verdicts[answerIndex] || "near" : "near";
 
       const result = await callQwen(
         apiKey,
         `你是个人知识星图的AI导航员。
 当前知识星：${state.node.name}（${state.node.field}）
-现象：${state.scene}
+异常信号：${state.signal}
 问题：${state.question}
+三个选项：${JSON.stringify(state.choices)}
+本次选择的固定判定：${expectedVerdict}
 背后概念：${state.concept}
 准确解释：${state.concept_explanation}
+事实锚点：${state.source_anchor}
+边界：${state.caveat}
 玩家已接触领域：${JSON.stringify(state.map_fields)}
 
-根据玩家的自由回答完成微远征，并让星图真正生长：
-- 先回应玩家的具体直觉，指出它解释了什么，以及一个容易忽略的变量。
-- 给出一枚可记住的“知识火种”，不要塞入太多术语。
-- 生成3颗下一步知识星：deeper沿当前概念深入；bridge连接到令人意外的其他学科；wild必须来自玩家尚未接触、且与当前领域距离很远的领域。
-- 新星名称应该像值得点击的谜题，不要直接使用课程名。
-- connection_reason解释为什么两颗星会相连。
+判定玩家选择并完成游戏回合：
+- verdict必须严格输出${expectedVerdict}。hit代表抓住核心机制；near代表方向部分正确；twist代表结果与直觉相反。不要羞辱错误选择。
+- verdict_line像游戏揭晓，必须有冲击力，不超过18字。
+- reveal只讲最关键的因果反转，不超过55字。
+- reveal必须遵守事实锚点与边界，禁止把影响写成决定、把假说写成定论。
+- spark是一句话能复述的知识战利品。
+- 生成3条下一航线供玩家三选一：deeper继续追击；bridge跨学科；wild跳到遥远的未接触领域。
+- 每条promise只说明“下一局会看到什么”，不要解释知识。
+- sector只能是life、mind、society、matter、creation、systems之一。
 
 必须输出合法JSON：
 {
-  "reply":"90至150字",
-  "spark":{"title":"4至14字","field":"真实领域","insight":"30至65字可复述的认识"},
-  "profile_signal":"12至30字，描述玩家此次展现的好奇方式，不贴人格标签",
-  "bridge_statement":"25至55字，指出一次跨学科惊喜",
+  "verdict":"hit或near或twist",
+  "verdict_line":"6至18字",
+  "reveal":"25至55字",
+  "spark":{"title":"4至12字","field":"真实领域","insight":"20至40字"},
+  "profile_signal":"10至24字，不贴人格标签",
   "next_nodes":[
-    {"name":"4至10字","field":"领域","hook":"18至40字","kind":"deeper","connection_reason":"15至35字"},
-    {"name":"4至10字","field":"领域","hook":"18至40字","kind":"bridge","connection_reason":"15至35字"},
-    {"name":"4至10字","field":"领域","hook":"18至40字","kind":"wild","connection_reason":"15至35字"}
+    {"name":"5至12字","field":"领域","sector":"六类之一","promise":"8至18字","kind":"deeper","connection_reason":"10至24字"},
+    {"name":"5至12字","field":"领域","sector":"六类之一","promise":"8至18字","kind":"bridge","connection_reason":"10至24字"},
+    {"name":"5至12字","field":"领域","sector":"六类之一","promise":"8至18字","kind":"wild","connection_reason":"10至24字"}
   ]
 }`,
-        `玩家的直觉回答：${JSON.stringify(answer)}`,
+        `玩家下注：${JSON.stringify(answer)}`,
         0.82,
       );
 
       const spark = result.spark as Record<string, unknown> | undefined;
       const nextNodes = Array.isArray(result.next_nodes) ? result.next_nodes.slice(0, 3) : [];
-      if (!result.reply || !spark?.title || !spark.insight || nextNodes.length < 3) {
+      if (!result.verdict_line || !result.reveal || !spark?.title || !spark.insight || nextNodes.length < 3) {
         throw new Error("Resolution incomplete");
       }
+      const verdict = expectedVerdict;
+      const sectors = ["life", "mind", "society", "matter", "creation", "systems"];
       return NextResponse.json({
-        reply: String(result.reply).slice(0, 620),
+        verdict,
+        verdict_line: String(result.verdict_line).slice(0, 36),
+        reveal: String(result.reveal).slice(0, 64),
         spark: {
           title: String(spark.title).slice(0, 40),
           field: String(spark.field || state.node.field).slice(0, 30),
-          insight: String(spark.insight).slice(0, 220),
+          insight: String(spark.insight).slice(0, 48),
         },
         profile_signal: String(result.profile_signal || "从具体反例寻找规律").slice(0, 80),
-        bridge_statement: String(result.bridge_statement || "这颗星正在与陌生领域建立连接。 ").slice(0, 180),
         next_nodes: nextNodes.map((item) => {
           const node = item as Record<string, unknown>;
           return {
             name: String(node.name || "未知信号").slice(0, 30),
             field: String(node.field || "未分类").slice(0, 30),
-            hook: String(node.hook || "一个尚未展开的问题").slice(0, 100),
+            sector: sectors.includes(String(node.sector)) ? String(node.sector) : "systems",
+            promise: String(node.promise || "下一局会出现新的反转").slice(0, 24),
             kind: ["deeper", "bridge", "wild"].includes(String(node.kind)) ? String(node.kind) : "bridge",
-            connection_reason: String(node.connection_reason || "由这次探索产生").slice(0, 100),
+            connection_reason: String(node.connection_reason || "由这次选择产生").slice(0, 60),
           };
         }),
       });
@@ -246,14 +280,14 @@ export async function POST(request: Request) {
 - 优先连接到已有星图中真正相关、但玩家可能想不到的节点。
 - 不要直接回答玩家的问题。
 必须输出JSON：
-{"node":{"name":"4至10字","field":"真实领域","hook":"20至45字"},"parent_hint":"从已有节点名称中选择最相关的一个；若没有则写起点","nav_note":"30至60字说明为什么把它画在这里"}`,
+{"node":{"name":"5至12字","field":"真实领域","sector":"life、mind、society、matter、creation、systems六选一","hook":"8至18字的下一局诱饵"},"parent_hint":"从已有节点名称中选择最相关的一个；若没有则写起点","nav_note":"15至32字说明为什么画在这里"}`,
         `玩家念头：${JSON.stringify(thought)}\n已有节点：${JSON.stringify(knownNodes)}\n已有领域：${JSON.stringify(fields)}`,
         0.72,
       );
       const node = result.node as Record<string, unknown> | undefined;
       if (!node?.name || !node.field || !node.hook) throw new Error("Chart incomplete");
       return NextResponse.json({
-        node: { name: String(node.name).slice(0, 30), field: String(node.field).slice(0, 30), hook: String(node.hook).slice(0, 110) },
+        node: { name: String(node.name).slice(0, 30), field: String(node.field).slice(0, 30), sector: String(node.sector || "systems").slice(0, 12), hook: String(node.hook).slice(0, 60) },
         parent_hint: String(result.parent_hint || "起点").slice(0, 40),
         nav_note: String(result.nav_note || "AI已经把这个念头画进你的宇宙。 ").slice(0, 180),
       });

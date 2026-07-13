@@ -22,9 +22,11 @@ test("server-renders the personal knowledge atlas", async () => {
   const html = await response.text();
   assert.match(html, /星火档案/);
   assert.match(html, /个人知识宇宙/);
-  assert.match(html, /可拖拽和缩放的个人知识星图/);
+  assert.match(html, /分区个人知识星图/);
   assert.match(html, /好奇心原点/);
-  assert.match(html, /把任何念头画进你的宇宙/);
+  assert.match(html, /把念头变成下一局/);
+  assert.match(html, /生命星系/);
+  assert.match(html, /探索等级/);
 });
 
 test("keeps DashScope behind the server-side atlas API", async () => {
