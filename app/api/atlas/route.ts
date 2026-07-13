@@ -1,31 +1,36 @@
 import { NextResponse } from "next/server";
 
-type AtlasNode = {
-  id?: string;
-  name: string;
-  field: string;
-  hook: string;
-  sector?: "life" | "mind" | "society" | "matter" | "creation" | "systems";
-};
+type SectorKey = "life" | "mind" | "society" | "matter" | "creation" | "systems";
+type Verdict = "hit" | "near" | "twist";
+type Interaction = "choice" | "scale" | "arrange";
 
+type AtlasNode = { id?: string; name: string; field: string; hook: string; sector?: SectorKey };
 type AtlasRequest = {
-  mode?: "encounter" | "resolve" | "chart";
+  mode?: "encounter" | "resolve" | "chart" | "constellation";
   node?: AtlasNode;
   map?: { discovered?: string[]; frontier?: string[]; fields?: string[] };
   answer?: string;
+  value?: number;
+  order?: string[];
   thought?: string;
   token?: string;
+  recent_nodes?: Array<{ name: string; field: string; spark?: string }>;
+  profile_signals?: string[];
 };
 
 type EncounterState = {
   node: AtlasNode;
   signal: string;
   question: string;
+  interaction: Interaction;
   choices: string[];
-  choice_verdicts: Array<"hit" | "near" | "twist">;
+  choice_verdicts: Verdict[];
+  scale: { left: string; right: string; target: number; tolerance: number } | null;
+  items: string[];
+  target_order: string[];
   visual: "pulse" | "orbit" | "split" | "network" | "scale";
   concept: string;
-  concept_explanation: string;
+  explanation: string;
   source_anchor: string;
   caveat: string;
   map_fields: string[];
@@ -33,6 +38,7 @@ type EncounterState = {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const sectors: SectorKey[] = ["life", "mind", "society", "matter", "creation", "systems"];
 
 function toBase64Url(bytes: Uint8Array) {
   let binary = "";
@@ -42,19 +48,12 @@ function toBase64Url(bytes: Uint8Array) {
 
 function fromBase64Url(value: string) {
   const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
-  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
-  const binary = atob(padded);
+  const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="));
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
 async function hmacKey(secret: string) {
-  return crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign", "verify"],
-  );
+  return crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
 }
 
 async function seal(value: EncounterState, secret: string) {
@@ -66,21 +65,12 @@ async function seal(value: EncounterState, secret: string) {
 async function unseal(token: string, secret: string): Promise<EncounterState | null> {
   const [payload, signature] = token.split(".");
   if (!payload || !signature) return null;
-  const valid = await crypto.subtle.verify(
-    "HMAC",
-    await hmacKey(secret),
-    fromBase64Url(signature),
-    encoder.encode(payload),
-  );
+  const valid = await crypto.subtle.verify("HMAC", await hmacKey(secret), fromBase64Url(signature), encoder.encode(payload));
   if (!valid) return null;
-  try {
-    return JSON.parse(decoder.decode(fromBase64Url(payload))) as EncounterState;
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(decoder.decode(fromBase64Url(payload))) as EncounterState; } catch { return null; }
 }
 
-async function callQwen(apiKey: string, system: string, user: string, temperature = 0.75) {
+async function callQwen(apiKey: string, system: string, user: string, temperature = 0.72) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45000);
   try {
@@ -101,9 +91,24 @@ async function callQwen(apiKey: string, system: string, user: string, temperatur
     const content = completion?.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("Missing output");
     return JSON.parse(content) as Record<string, unknown>;
-  } finally {
-    clearTimeout(timeout);
+  } finally { clearTimeout(timeout); }
+}
+
+function gradeEncounter(state: EncounterState, body: AtlasRequest): { verdict: Verdict; answer: string } {
+  if (state.interaction === "scale" && state.scale) {
+    const value = Math.max(0, Math.min(100, Number(body.value ?? 50)));
+    const distance = Math.abs(value - state.scale.target);
+    return { verdict: distance <= state.scale.tolerance ? "hit" : distance <= state.scale.tolerance * 2.4 ? "near" : "twist", answer: `${value}/100，靠近“${value < 50 ? state.scale.left : state.scale.right}”` };
   }
+  if (state.interaction === "arrange") {
+    const order = Array.isArray(body.order) ? body.order.slice(0, 3) : [];
+    const exact = order.join("|") === state.target_order.join("|");
+    const overlap = order.filter((item, index) => item === state.target_order[index]).length;
+    return { verdict: exact ? "hit" : overlap >= 1 ? "near" : "twist", answer: order.join(" → ") };
+  }
+  const answer = String(body.answer || "").slice(0, 80);
+  const index = state.choices.findIndex((choice) => choice === answer);
+  return { verdict: index >= 0 ? state.choice_verdicts[index] || "near" : "near", answer };
 }
 
 export async function GET() {
@@ -112,193 +117,184 @@ export async function GET() {
 
 export async function POST(request: Request) {
   const apiKey = process.env.DASHSCOPE_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: "AI导航员尚未连接" }, { status: 503 });
-
+  if (!apiKey) return NextResponse.json({ error: "制图台尚未连接" }, { status: 503 });
   let body: AtlasRequest;
-  try {
-    body = (await request.json()) as AtlasRequest;
-  } catch {
-    return NextResponse.json({ error: "请求格式无效" }, { status: 400 });
-  }
+  try { body = (await request.json()) as AtlasRequest; } catch { return NextResponse.json({ error: "这页档案无法辨认" }, { status: 400 }); }
 
   try {
     if (body.mode === "encounter") {
-      if (!body.node?.name || !body.node.field || !body.node.hook) {
-        return NextResponse.json({ error: "这颗星的坐标不完整" }, { status: 400 });
-      }
-
+      if (!body.node?.name || !body.node.field || !body.node.hook) return NextResponse.json({ error: "观测坐标不完整" }, { status: 400 });
       const mapFields = body.map?.fields?.slice(0, 24) || [];
       const result = await callQwen(
         apiKey,
-        `你是知识探索游戏《星火档案》的关卡生成器。你不是老师，任务是制造一个让人忍不住下注的短回合。
+        `你是《星火档案》的无名策展人。这里不是课堂、问答产品或科幻控制台，而是一座安静的夜间天文档案馆。你要从真实知识中挑出一个值得亲手触碰的瞬间。
 
-围绕指定知识星生成一次20秒挑战：
-- signal必须是一条反常识事实，像游戏中的异常警报，不铺垫背景。
-- signal必须来自可重复的经典实验、稳定统计规律或明确机制；先在内部找到实验锚点，再写题。
-- question必须要求预测“条件改变后会发生什么”，不能问开放式“为什么”，也不要只复述signal。
-- 三个choices都要听起来合理、互相排斥、字数相近，玩家无需专业知识。
-- 其中至少一个选项应利用常见直觉误区，但不能故意文字欺骗。
-- 暗中保留真实概念和准确解释，下一步用于判定。
-- 禁止网络流行神话和绝对化因果。例如：不能说没有颜色词就看不见颜色，只能陈述可靠的辨别速度或分类差异；不能把相关性写成因果；不能写“某假说已被证实”。
-- 如果指定星球的流行说法有争议，必须改用同领域更可靠、更具体的实验。
-- 禁止课堂口吻、长故事、定义罗列和“你知道吗”。
+为指定档案生成一次20至40秒的“观测”。可选三种动作：
+- choice：适合比较三种具体结果。
+- scale：适合估计连续变化、比例、强弱或位置。left/right必须是两个有意义的极端，target为0至100的答案。
+- arrange：适合排列三个事件、尺度或因果阶段。items是展示顺序打乱的三个短语，target_order是真实顺序。
 
-必须输出合法JSON：
+文字与事实纪律：
+- 档案中的hook是本次观测的核心承诺；signal、question与答案必须直接解释或检验这个现象，禁止只在同一学科内另找一个无关知识点。
+- 如果name带有隐喻，以hook中的具体问题为准；玩家结束后应能回答hook，而不是只学到一个相邻事实。
+- signal是可观察的具体情景，不使用“你知道吗”，不写背景讲义。
+- question邀请一个动作，不能要求背术语。
+- 必须来自可重复实验、稳定规律或明确机制，并保留事实锚点与边界。
+- 不把相关写成因果，不把假说写成定论；有争议就换一个更可靠的现象。
+- 禁用模型腔与宣传腔：显著、赋能、重塑、深层、揭示、背后逻辑、系统性、颠覆、神奇、竟然。
+- 句子具体、克制、有画面。不要让每个标题都成为“为什么”。
+
+输出JSON：
 {
-  "signal":"25至45字的异常事实",
-  "question":"12至28字的预测题",
-  "choices":["三个选项，每项6至18字"],
-  "choice_verdicts":["与三个选项逐项对应，hit、near、twist各出现一次"],
+  "signal":"22至42字，只有一个画面",
+  "question":"10至24字",
+  "interaction":"choice或scale或arrange",
+  "choices":["仅choice填写3项，每项5至16字"],
+  "choice_verdicts":["仅choice填写，与选项对应，hit、near、twist各一次"],
+  "scale":{"left":"2至6字","right":"2至6字","target":0至100整数,"tolerance":8至18整数},
+  "items":["仅arrange填写3项，每项3至10字"],
+  "target_order":["仅arrange填写真实顺序"],
   "visual":"pulse、orbit、split、network、scale五选一",
-  "concept":"真实知识概念，4至16字",
-  "concept_explanation":"40至75字，准确解释结果",
-  "source_anchor":"实验、效应或稳定规律的名称，8至30字",
-  "caveat":"15至35字，指出不能由此推出什么"
+  "concept":"真实概念",
+  "explanation":"35至65字，准确解释结果",
+  "source_anchor":"实验、效应或规律名称",
+  "caveat":"12至30字，说明不能推出什么"
 }`,
-        `知识星：${JSON.stringify(body.node)}\n玩家已接触领域：${JSON.stringify(mapFields)}`,
-        0.8,
+        `档案：${JSON.stringify(body.node)}\n已经走过的领域：${JSON.stringify(mapFields)}`,
+        0.76,
       );
 
+      const interaction = ["choice", "scale", "arrange"].includes(String(result.interaction)) ? String(result.interaction) as Interaction : "choice";
       const choices = Array.isArray(result.choices) ? result.choices.slice(0, 3).map((item) => String(item).slice(0, 20)) : [];
-      const choiceVerdicts = Array.isArray(result.choice_verdicts) ? result.choice_verdicts.slice(0, 3).map(String) : [];
-      const visual = ["pulse", "orbit", "split", "network", "scale"].includes(String(result.visual)) ? String(result.visual) as EncounterState["visual"] : "pulse";
-      if (!result.signal || !result.question || !result.concept || !result.concept_explanation || !result.source_anchor || !result.caveat || choices.length !== 3 || !["hit", "near", "twist"].every((grade) => choiceVerdicts.includes(grade))) {
-        throw new Error("Encounter incomplete");
-      }
+      const verdicts = Array.isArray(result.choice_verdicts) ? result.choice_verdicts.slice(0, 3).map(String) as Verdict[] : [];
+      const rawScale = result.scale as Record<string, unknown> | undefined;
+      const scale = rawScale ? { left: String(rawScale.left || "更少").slice(0, 8), right: String(rawScale.right || "更多").slice(0, 8), target: Math.max(0, Math.min(100, Number(rawScale.target || 50))), tolerance: Math.max(8, Math.min(18, Number(rawScale.tolerance || 12))) } : null;
+      const items = Array.isArray(result.items) ? result.items.slice(0, 3).map((item) => String(item).slice(0, 14)) : [];
+      const targetOrder = Array.isArray(result.target_order) ? result.target_order.slice(0, 3).map((item) => String(item).slice(0, 14)) : [];
+      const validMechanic = interaction === "choice" ? choices.length === 3 && ["hit", "near", "twist"].every((grade) => verdicts.includes(grade)) : interaction === "scale" ? Boolean(scale) : items.length === 3 && targetOrder.length === 3;
+      if (!result.signal || !result.question || !result.concept || !result.explanation || !result.source_anchor || !result.caveat || !validMechanic) throw new Error("Encounter incomplete");
+
       const state: EncounterState = {
         node: body.node,
-        signal: String(result.signal).slice(0, 55),
-        question: String(result.question).slice(0, 32),
+        signal: String(result.signal).slice(0, 52),
+        question: String(result.question).slice(0, 30),
+        interaction,
         choices,
-        choice_verdicts: choiceVerdicts as EncounterState["choice_verdicts"],
-        visual,
+        choice_verdicts: verdicts,
+        scale,
+        items,
+        target_order: targetOrder,
+        visual: ["pulse", "orbit", "split", "network", "scale"].includes(String(result.visual)) ? String(result.visual) as EncounterState["visual"] : "pulse",
         concept: String(result.concept),
-        concept_explanation: String(result.concept_explanation),
+        explanation: String(result.explanation),
         source_anchor: String(result.source_anchor),
         caveat: String(result.caveat),
         map_fields: mapFields,
       };
-      return NextResponse.json({
-        signal: state.signal,
-        question: state.question,
-        choices: state.choices,
-        visual: state.visual,
-        token: await seal(state, apiKey),
-      });
+      return NextResponse.json({ signal: state.signal, question: state.question, interaction: state.interaction, choices: state.choices, scale: state.scale ? { left: state.scale.left, right: state.scale.right } : null, items: state.items, visual: state.visual, token: await seal(state, apiKey) });
     }
 
     if (body.mode === "resolve") {
-      const answer = body.answer?.trim().slice(0, 280);
-      if (!answer || !body.token) return NextResponse.json({ error: "请先留下你的直觉" }, { status: 400 });
+      if (!body.token) return NextResponse.json({ error: "观测尚未完成" }, { status: 400 });
       const state = await unseal(body.token, apiKey);
-      if (!state) return NextResponse.json({ error: "这次远征已经失去信号" }, { status: 400 });
-      const answerIndex = state.choices.findIndex((choice) => choice === answer);
-      const expectedVerdict = answerIndex >= 0 && Array.isArray(state.choice_verdicts) ? state.choice_verdicts[answerIndex] || "near" : "near";
-
+      if (!state) return NextResponse.json({ error: "这次观测已经褪色" }, { status: 400 });
+      const graded = gradeEncounter(state, body);
       const result = await callQwen(
         apiKey,
-        `你是个人知识星图的AI导航员。
-当前知识星：${state.node.name}（${state.node.field}）
-异常信号：${state.signal}
+        `你是《星火档案》的无名策展人。根据固定判定完成一页档案。
+观测：${state.signal}
 问题：${state.question}
-三个选项：${JSON.stringify(state.choices)}
-本次选择的固定判定：${expectedVerdict}
-背后概念：${state.concept}
-准确解释：${state.concept_explanation}
+玩家动作：${graded.answer}
+固定判定：${graded.verdict}
+概念：${state.concept}
+准确解释：${state.explanation}
 事实锚点：${state.source_anchor}
 边界：${state.caveat}
-玩家已接触领域：${JSON.stringify(state.map_fields)}
+已经走过的领域：${JSON.stringify(state.map_fields)}
 
-判定玩家选择并完成游戏回合：
-- verdict必须严格输出${expectedVerdict}。hit代表抓住核心机制；near代表方向部分正确；twist代表结果与直觉相反。不要羞辱错误选择。
-- verdict_line像游戏揭晓，必须有冲击力，不超过18字。
-- reveal只讲最关键的因果反转，不超过55字。
-- reveal必须遵守事实锚点与边界，禁止把影响写成决定、把假说写成定论。
-- spark是一句话能复述的知识战利品。
-- 生成3条下一航线供玩家三选一：deeper继续追击；bridge跨学科；wild跳到遥远的未接触领域。
-- 每条promise只说明“下一局会看到什么”，不要解释知识。
-- sector只能是life、mind、society、matter、creation、systems之一。
+写作纪律：
+- echo是对玩家动作的温和回应，不说“正确/错误”。
+- reveal只有一句，先写具体变化，再落到认识；准确、克制、有余韵。
+- 不把基因、分子、城市或算法写成人，不说它们“选择、渴望、谈判、记住”了什么；诗意不能牺牲准确。
+- 禁用：显著、赋能、重塑、深层、揭示、机制、背后、系统性、颠覆、神奇、竟然、无声的契约、完成复制。
+- 生成3条去向：deeper继续凝视；bridge横渡到意外学科；wild去尚未接触的远方。
+- 名称像一件具体标本、一个动作或一个场景，不写课程标题，不全用疑问句。
+- promise只写下一次会亲眼看到什么。
 
-必须输出合法JSON：
+输出JSON：
 {
-  "verdict":"hit或near或twist",
-  "verdict_line":"6至18字",
-  "reveal":"25至55字",
-  "spark":{"title":"4至12字","field":"真实领域","insight":"20至40字"},
-  "profile_signal":"10至24字，不贴人格标签",
+  "echo":"8至18字",
+  "reveal":"24至52字",
+  "spark":{"title":"4至10字","field":"真实领域","insight":"18至38字"},
+  "profile_signal":"10至22字，描述玩家反复偏爱的提问角度",
   "next_nodes":[
-    {"name":"5至12字","field":"领域","sector":"六类之一","promise":"8至18字","kind":"deeper","connection_reason":"10至24字"},
-    {"name":"5至12字","field":"领域","sector":"六类之一","promise":"8至18字","kind":"bridge","connection_reason":"10至24字"},
-    {"name":"5至12字","field":"领域","sector":"六类之一","promise":"8至18字","kind":"wild","connection_reason":"10至24字"}
+    {"name":"4至12字","field":"领域","sector":"六类之一","promise":"7至18字","kind":"deeper","connection_reason":"10至22字"},
+    {"name":"4至12字","field":"领域","sector":"六类之一","promise":"7至18字","kind":"bridge","connection_reason":"10至22字"},
+    {"name":"4至12字","field":"领域","sector":"六类之一","promise":"7至18字","kind":"wild","connection_reason":"10至22字"}
   ]
 }`,
-        `玩家下注：${JSON.stringify(answer)}`,
-        0.82,
+        `请为这次观测归档。判定必须保持为${graded.verdict}。`,
+        0.7,
       );
-
       const spark = result.spark as Record<string, unknown> | undefined;
       const nextNodes = Array.isArray(result.next_nodes) ? result.next_nodes.slice(0, 3) : [];
-      if (!result.verdict_line || !result.reveal || !spark?.title || !spark.insight || nextNodes.length < 3) {
-        throw new Error("Resolution incomplete");
-      }
-      const verdict = expectedVerdict;
-      const sectors = ["life", "mind", "society", "matter", "creation", "systems"];
+      if (!result.echo || !result.reveal || !spark?.title || !spark.insight || nextNodes.length !== 3) throw new Error("Resolution incomplete");
       return NextResponse.json({
-        verdict,
-        verdict_line: String(result.verdict_line).slice(0, 36),
+        verdict: graded.verdict,
+        echo: String(result.echo).slice(0, 24),
         reveal: String(result.reveal).slice(0, 64),
-        spark: {
-          title: String(spark.title).slice(0, 40),
-          field: String(spark.field || state.node.field).slice(0, 30),
-          insight: String(spark.insight).slice(0, 48),
-        },
-        profile_signal: String(result.profile_signal || "从具体反例寻找规律").slice(0, 80),
-        next_nodes: nextNodes.map((item) => {
+        spark: { title: String(spark.title).slice(0, 24), field: String(spark.field || state.node.field).slice(0, 30), insight: String(spark.insight).slice(0, 48) },
+        profile_signal: String(result.profile_signal || "喜欢从微小差异追踪变化").slice(0, 50),
+        source_note: `${state.source_anchor} · ${state.caveat}`.slice(0, 90),
+        next_nodes: nextNodes.map((item, index) => {
           const node = item as Record<string, unknown>;
-          return {
-            name: String(node.name || "未知信号").slice(0, 30),
-            field: String(node.field || "未分类").slice(0, 30),
-            sector: sectors.includes(String(node.sector)) ? String(node.sector) : "systems",
-            promise: String(node.promise || "下一局会出现新的反转").slice(0, 24),
-            kind: ["deeper", "bridge", "wild"].includes(String(node.kind)) ? String(node.kind) : "bridge",
-            connection_reason: String(node.connection_reason || "由这次选择产生").slice(0, 60),
-          };
+          const routeKinds = ["deeper", "bridge", "wild"] as const;
+          return { name: String(node.name || "未命名标本").slice(0, 28), field: String(node.field || "未分类").slice(0, 30), sector: sectors.includes(String(node.sector) as SectorKey) ? String(node.sector) : "systems", promise: String(node.promise || "看见另一种变化").slice(0, 28), kind: routeKinds[index], connection_reason: String(node.connection_reason || "由这次观测相连").slice(0, 50) };
         }),
       });
     }
 
-    if (body.mode === "chart") {
-      const thought = body.thought?.trim().slice(0, 240);
-      if (!thought) return NextResponse.json({ error: "写下一个念头，AI才能把它变成坐标" }, { status: 400 });
-      const knownNodes = [...(body.map?.discovered || []), ...(body.map?.frontier || [])].slice(0, 36);
-      const fields = body.map?.fields?.slice(0, 24) || [];
+    if (body.mode === "constellation") {
+      const recent = body.recent_nodes?.slice(-4) || [];
+      if (recent.length < 3) return NextResponse.json({ error: "还没有足够的观测来命名星座" }, { status: 400 });
       const result = await callQwen(
         apiKey,
-        `你是个人知识星图的AI制图员。把玩家模糊、日常或抽象的念头，转化成一颗值得2分钟探索的知识星。
-- 找到它背后最有解释力的真实知识领域。
-- 名称必须像一个谜题或异常信号，而不是课程标题。
-- 优先连接到已有星图中真正相关、但玩家可能想不到的节点。
-- 不要直接回答玩家的问题。
-必须输出JSON：
-{"node":{"name":"5至12字","field":"真实领域","sector":"life、mind、society、matter、creation、systems六选一","hook":"8至18字的下一局诱饵"},"parent_hint":"从已有节点名称中选择最相关的一个；若没有则写起点","nav_note":"15至32字说明为什么画在这里"}`,
-        `玩家念头：${JSON.stringify(thought)}\n已有节点：${JSON.stringify(knownNodes)}\n已有领域：${JSON.stringify(fields)}`,
-        0.72,
+        `你是《星火档案》的星座命名者。根据一个人最近走过的3至4个知识标本，发现其反复追逐的“问题形状”。
+- 名称应像真正的星座名：具体、含蓄、可记忆，不是人格测试，不使用“型/者/主义”。
+- line用第二人称指出这些看似无关的探索为何属于同一条好奇心；必须提到一项能从标本中看见的具体动作或矛盾，不能只堆抽象形容词。
+- 描述提问习惯，不评判人格。禁用：AI、算法、机制、系统、深层、揭示、痴迷于、无主秩序、脆弱而坚韧、动态平衡。
+输出JSON：{"name":"4至9字，末尾可含星座","line":"18至38字","motif":"4至10字的好奇母题"}`,
+        `最近标本：${JSON.stringify(recent)}\n提问痕迹：${JSON.stringify(body.profile_signals?.slice(-6) || [])}`,
+        0.78,
+      );
+      if (!result.name || !result.line) throw new Error("Constellation incomplete");
+      return NextResponse.json({ name: String(result.name).slice(0, 20), line: String(result.line).slice(0, 60), motif: String(result.motif || "未命名的偏爱").slice(0, 24) });
+    }
+
+    if (body.mode === "chart") {
+      const thought = body.thought?.trim().slice(0, 160);
+      if (!thought) return NextResponse.json({ error: "先写下一件无法解释的事" }, { status: 400 });
+      const knownNodes = [...(body.map?.discovered || []), ...(body.map?.frontier || [])].slice(0, 40);
+      const result = await callQwen(
+        apiKey,
+        `你是《星火档案》的制图员。把一句日常困惑变成一件可观测的知识标本。
+- 不回答原问题，只找到最有解释力且可靠的领域。
+- 名称是具体场景、物件或动作，4至12字；避免“为什么”和课程标题。
+- hook只承诺下一次会看到的现象。
+- sector只能是life、mind、society、matter、creation、systems。
+- 禁用：显著、机制、赋能、重塑、深层、揭示、系统性。
+输出JSON：{"node":{"name":"名称","field":"真实领域","sector":"六类之一","hook":"8至20字"},"parent_hint":"已有节点名或起点","nav_note":"12至28字"}`,
+        `这句话：${JSON.stringify(thought)}\n已有标本：${JSON.stringify(knownNodes)}`,
+        0.68,
       );
       const node = result.node as Record<string, unknown> | undefined;
       if (!node?.name || !node.field || !node.hook) throw new Error("Chart incomplete");
-      return NextResponse.json({
-        node: { name: String(node.name).slice(0, 30), field: String(node.field).slice(0, 30), sector: String(node.sector || "systems").slice(0, 12), hook: String(node.hook).slice(0, 60) },
-        parent_hint: String(result.parent_hint || "起点").slice(0, 40),
-        nav_note: String(result.nav_note || "AI已经把这个念头画进你的宇宙。 ").slice(0, 180),
-      });
+      return NextResponse.json({ node: { name: String(node.name).slice(0, 28), field: String(node.field).slice(0, 30), sector: sectors.includes(String(node.sector) as SectorKey) ? String(node.sector) : "systems", hook: String(node.hook).slice(0, 40) }, parent_hint: String(result.parent_hint || "起点").slice(0, 40), nav_note: String(result.nav_note || "这件事被收进了夜空").slice(0, 48) });
     }
 
-    return NextResponse.json({ error: "未知的导航指令" }, { status: 400 });
+    return NextResponse.json({ error: "无法识别这项观测" }, { status: 400 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown";
-    return NextResponse.json(
-      { error: message.includes("DashScope") ? "AI导航员暂时没有回应" : "这片星域生成失败，请重试" },
-      { status: 502 },
-    );
+    return NextResponse.json({ error: message.includes("DashScope") ? "制图台暂时没有回信" : "这页档案没有生成完整，请重试" }, { status: 502 });
   }
 }
