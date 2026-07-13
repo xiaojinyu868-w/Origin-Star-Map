@@ -1,381 +1,513 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent } from "react";
 
-type Phase = "landing" | "generating" | "playing" | "judging" | "complete";
-type EngineState = "checking" | "ready" | "offline";
-type WorldObject = { name: string; detail: string };
-type World = {
-  title: string;
-  subtitle: string;
-  arrival: string;
+type NodeStatus = "origin" | "frontier" | "discovered";
+type EdgeKind = "normal" | "bridge" | "wild";
+
+type Spark = { title: string; field: string; insight: string };
+
+type AtlasNode = {
+  id: string;
+  name: string;
+  field: string;
+  hook: string;
+  x: number;
+  y: number;
+  status: NodeStatus;
+  spark?: Spark;
+  connectionReason?: string;
+};
+
+type AtlasEdge = { from: string; to: string; kind: EdgeKind };
+
+type AtlasState = {
+  version: 3;
+  nodes: AtlasNode[];
+  edges: AtlasEdge[];
+  profileSignals: string[];
+  expeditions: number;
+};
+
+type Encounter = {
   scene: string;
-  objects: WorldObject[];
-  first_anomaly: string;
-};
-type Evidence = { title: string; detail: string; relevance: number };
-type Turn = { action: string; observation: string };
-type Result = {
-  score: number;
-  verdict: "hit" | "close" | "miss";
-  feedback: string;
-  curiosity_signature: string;
-  reveal: string;
-  rule_explanation: string;
-  domain: string;
+  question: string;
+  quick_starts: string[];
+  token: string;
 };
 
-const MAX_TURNS = 6;
-const GENERATION_LINES = [
-  "正在写下第一条物理规律",
-  "正在让城市居民忘记它的存在",
-  "正在埋下三个可以被发现的破绽",
-  "正在确认这个世界不会自相矛盾",
+type NextNode = {
+  name: string;
+  field: string;
+  hook: string;
+  kind: "deeper" | "bridge" | "wild";
+  connection_reason: string;
+};
+
+type Resolution = {
+  reply: string;
+  spark: Spark;
+  profile_signal: string;
+  bridge_statement: string;
+  next_nodes: NextNode[];
+};
+
+type PanelStage = "summary" | "loading" | "question" | "resolving" | "reveal";
+type EngineState = "checking" | "ready" | "offline";
+
+const STORAGE_KEY = "spark-atlas-v3";
+
+const SEED_NODES: AtlasNode[] = [
+  { id: "origin", name: "好奇心原点", field: "你的起点", hook: "所有尚未提出的问题，都从这里向外生长。", x: 50, y: 50, status: "origin" },
+  { id: "cooperation", name: "合作为何出现", field: "演化生物学", hook: "自私的个体，为什么会共同养大别人的孩子？", x: 31, y: 29, status: "frontier" },
+  { id: "random", name: "随机有形状吗", field: "概率论", hook: "杂乱无章的结果，为什么常常呈现稳定图案？", x: 52, y: 20, status: "frontier" },
+  { id: "music", name: "和弦为何动人", field: "音乐与声学", hook: "空气振动如何变成紧张、安慰与期待？", x: 73, y: 31, status: "frontier" },
+  { id: "language", name: "语言制造颜色", field: "语言学", hook: "没有某个颜色词，人还会以同样方式看见它吗？", x: 77, y: 57, status: "frontier" },
+  { id: "city", name: "城市会呼吸吗", field: "城市科学", hook: "道路、人口和能源为何呈现出生命般的尺度规律？", x: 66, y: 76, status: "frontier" },
+  { id: "ship", name: "哪一艘才是原船", field: "身份哲学", hook: "逐块替换所有零件之后，原来的事物还存在吗？", x: 42, y: 78, status: "frontier" },
+  { id: "fungus", name: "地下的无声网络", field: "真菌生态学", hook: "没有大脑的菌丝，如何协调一整片森林？", x: 20, y: 61, status: "frontier" },
 ];
 
-async function expeditionRequest(body: Record<string, unknown>) {
-  const response = await fetch("/api/expedition", {
+const SEED_EDGES: AtlasEdge[] = SEED_NODES.slice(1).map((node) => ({ from: "origin", to: node.id, kind: "normal" }));
+
+const INITIAL_ATLAS: AtlasState = {
+  version: 3,
+  nodes: SEED_NODES,
+  edges: SEED_EDGES,
+  profileSignals: [],
+  expeditions: 0,
+};
+
+async function atlasRequest(body: Record<string, unknown>) {
+  const response = await fetch("/api/atlas", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "AI世界引擎没有回应");
+  if (!response.ok) throw new Error(data.error || "AI导航员没有回应");
   return data;
 }
 
+function clamp(value: number, min = 8, max = 92) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function nextPosition(parent: AtlasNode, kind: NextNode["kind"], index: number, total: number) {
+  if (kind === "deeper") return { x: clamp(parent.x + 13), y: clamp(parent.y - 13) };
+  if (kind === "bridge") return { x: clamp(parent.x - 16), y: clamp(parent.y + 12) };
+  const angle = (total * 137.5 + index * 71) * Math.PI / 180;
+  return { x: clamp(50 + Math.cos(angle) * 42), y: clamp(50 + Math.sin(angle) * 38) };
+}
+
+function fieldCount(nodes: AtlasNode[]) {
+  return new Set(nodes.filter((node) => node.status === "discovered").map((node) => node.field)).size;
+}
+
 export function CuriosityGame() {
-  const [phase, setPhase] = useState<Phase>("landing");
+  const [atlas, setAtlas] = useState<AtlasState>(INITIAL_ATLAS);
   const [engine, setEngine] = useState<EngineState>("checking");
-  const [curiosity, setCuriosity] = useState("");
-  const [world, setWorld] = useState<World | null>(null);
-  const [token, setToken] = useState("");
-  const [action, setAction] = useState("");
-  const [hypothesis, setHypothesis] = useState("");
-  const [turnsUsed, setTurnsUsed] = useState(0);
-  const [latestObservation, setLatestObservation] = useState("");
-  const [consequence, setConsequence] = useState("");
-  const [evidence, setEvidence] = useState<Evidence[]>([]);
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [showHypothesis, setShowHypothesis] = useState(false);
-  const [result, setResult] = useState<Result | null>(null);
-  const [error, setError] = useState("");
-  const [generationLine, setGenerationLine] = useState(0);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [panelStage, setPanelStage] = useState<PanelStage>("summary");
+  const [encounter, setEncounter] = useState<Encounter | null>(null);
+  const [answer, setAnswer] = useState("");
+  const [resolution, setResolution] = useState<Resolution | null>(null);
+  const [chartInput, setChartInput] = useState("");
+  const [charting, setCharting] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [introOpen, setIntroOpen] = useState(true);
+  const [toast, setToast] = useState("");
+  const [newNodeIds, setNewNodeIds] = useState<string[]>([]);
+  const [storageReady, setStorageReady] = useState(false);
+  const requestSerial = useRef(0);
+  const drag = useRef<{ active: boolean; x: number; y: number; panX: number; panY: number }>({ active: false, x: 0, y: 0, panX: 0, panY: 0 });
+
+  const selectedNode = atlas.nodes.find((node) => node.id === selectedId) || null;
+  const discovered = atlas.nodes.filter((node) => node.status === "discovered");
+  const frontier = atlas.nodes.filter((node) => node.status === "frontier");
+  const diversity = fieldCount(atlas.nodes);
 
   useEffect(() => {
-    let active = true;
-    fetch("/api/expedition")
+    try {
+      const saved = window.localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved) as AtlasState;
+        if (parsed.version === 3) {
+          setAtlas(parsed);
+          setIntroOpen(false);
+        }
+      }
+    } catch {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } finally {
+      setStorageReady(true);
+    }
+
+    fetch("/api/atlas")
       .then((response) => response.json())
-      .then((data) => { if (active) setEngine(data.connected ? "ready" : "offline"); })
-      .catch(() => { if (active) setEngine("offline"); });
-    return () => { active = false; };
+      .then((data) => setEngine(data.connected ? "ready" : "offline"))
+      .catch(() => setEngine("offline"));
   }, []);
 
   useEffect(() => {
-    if (phase !== "generating") return;
-    const timer = window.setInterval(() => {
-      setGenerationLine((line) => (line + 1) % GENERATION_LINES.length);
-    }, 1700);
-    return () => window.clearInterval(timer);
-  }, [phase]);
+    if (!storageReady) return;
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(atlas));
+  }, [atlas, storageReady]);
 
-  async function createWorld() {
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 2800);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
+    if (!newNodeIds.length) return;
+    const timer = window.setTimeout(() => setNewNodeIds([]), 2200);
+    return () => window.clearTimeout(timer);
+  }, [newNodeIds]);
+
+  function mapContext() {
+    return {
+      discovered: discovered.map((node) => node.name),
+      frontier: frontier.map((node) => node.name),
+      fields: [...new Set(discovered.map((node) => node.field))],
+    };
+  }
+
+  function selectNode(node: AtlasNode) {
+    requestSerial.current += 1;
+    setSelectedId(node.id);
+    setPanelStage("summary");
+    setEncounter(null);
+    setResolution(null);
+    setAnswer("");
+    setIntroOpen(false);
+  }
+
+  function closePanel() {
+    requestSerial.current += 1;
+    setSelectedId(null);
+    setEncounter(null);
+    setResolution(null);
+    setAnswer("");
+    setPanelStage("summary");
+  }
+
+  async function startEncounter() {
+    if (!selectedNode || selectedNode.status === "origin") return;
     if (engine !== "ready") {
-      setError("这不是离线也能玩的演示。AI世界引擎连接后，星球才会真正诞生。请先配置新的 DashScope Key。 ");
+      setToast("AI导航员未连接，无法生成这次微远征");
       return;
     }
-
-    setError("");
-    setPhase("generating");
-    setEvidence([]);
-    setTurns([]);
-    setTurnsUsed(0);
-    setResult(null);
-    setShowHypothesis(false);
-
+    setPanelStage("loading");
+    setAnswer("");
+    setResolution(null);
+    const requestId = ++requestSerial.current;
     try {
-      const data = await expeditionRequest({ mode: "start", curiosity });
-      setWorld(data.world);
-      setToken(data.token);
-      setLatestObservation(data.world.first_anomaly);
-      setConsequence("世界已经生成。它的规律此刻存在于AI的秘密状态中。 ");
-      setPhase("playing");
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "星球生成失败");
-      setPhase("landing");
+      const data = await atlasRequest({ mode: "encounter", node: selectedNode, map: mapContext() });
+      if (requestId !== requestSerial.current) return;
+      setEncounter(data as Encounter);
+      setPanelStage("question");
+    } catch (error) {
+      if (requestId !== requestSerial.current) return;
+      setToast(error instanceof Error ? error.message : "远征生成失败");
+      setPanelStage("summary");
     }
   }
 
-  async function performAction(suggested?: string) {
-    const finalAction = (suggested ?? action).trim();
-    if (!finalAction || phase !== "playing") return;
-    setError("");
-    setAction("");
-    setPhase("judging");
-
+  async function resolveEncounter() {
+    if (!selectedNode || !encounter || !answer.trim()) return;
+    setPanelStage("resolving");
+    const requestId = ++requestSerial.current;
     try {
-      const data = await expeditionRequest({ mode: "act", token, action: finalAction });
-      setToken(data.token);
-      setTurnsUsed(data.turns_used);
-      setLatestObservation(data.observation);
-      setConsequence(data.consequence);
-      setSuggestions(data.suggested_actions || []);
-      setEvidence((current) => [...current, data.evidence]);
-      setTurns((current) => [...current, { action: finalAction, observation: data.observation }]);
-      setShowHypothesis(Boolean(data.must_guess));
-      setPhase("playing");
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "实验没有得到回应");
-      setAction(finalAction);
-      setPhase("playing");
+      const data = await atlasRequest({ mode: "resolve", token: encounter.token, answer });
+      if (requestId !== requestSerial.current) return;
+      const resolved = data as Resolution;
+      const parent = selectedNode;
+      const addedIds: string[] = [];
+
+      setAtlas((current) => {
+        const existingNames = new Set(current.nodes.map((node) => node.name));
+        const freshNodes: AtlasNode[] = [];
+        const freshEdges: AtlasEdge[] = [];
+        resolved.next_nodes.forEach((candidate, index) => {
+          if (existingNames.has(candidate.name)) return;
+          const id = `ai-${Date.now()}-${index}`;
+          const position = nextPosition(parent, candidate.kind, index, current.nodes.length);
+          addedIds.push(id);
+          freshNodes.push({
+            id,
+            name: candidate.name,
+            field: candidate.field,
+            hook: candidate.hook,
+            x: position.x,
+            y: position.y,
+            status: "frontier",
+            connectionReason: candidate.connection_reason,
+          });
+          freshEdges.push({
+            from: parent.id,
+            to: id,
+            kind: candidate.kind === "deeper" ? "normal" : candidate.kind,
+          });
+        });
+
+        return {
+          ...current,
+          nodes: [
+            ...current.nodes.map((node) => node.id === parent.id ? { ...node, status: "discovered" as const, spark: resolved.spark } : node),
+            ...freshNodes,
+          ],
+          edges: [...current.edges, ...freshEdges],
+          profileSignals: [...current.profileSignals, resolved.profile_signal].slice(-8),
+          expeditions: current.expeditions + 1,
+        };
+      });
+      setNewNodeIds(addedIds);
+      setResolution(resolved);
+      setPanelStage("reveal");
+    } catch (error) {
+      if (requestId !== requestSerial.current) return;
+      setToast(error instanceof Error ? error.message : "星图生长失败");
+      setPanelStage("question");
     }
   }
 
-  async function submitHypothesis() {
-    const finalHypothesis = hypothesis.trim();
-    if (!finalHypothesis || phase !== "playing") return;
-    setError("");
-    setPhase("judging");
-
+  async function chartThought() {
+    const thought = chartInput.trim();
+    if (!thought || charting) return;
+    if (engine !== "ready") {
+      setToast("AI导航员未连接，暂时无法绘制新坐标");
+      return;
+    }
+    setCharting(true);
     try {
-      const data = await expeditionRequest({ mode: "judge", token, hypothesis: finalHypothesis });
-      setTurnsUsed(data.turns_used);
-      if (data.ended) {
-        setResult(data as Result);
-        setPhase("complete");
-        return;
-      }
-
-      setToken(data.token);
-      setLatestObservation(data.feedback);
-      setConsequence(`裁判置信度 ${data.score}%。这个假说还不能解释所有现象。`);
-      setHypothesis("");
-      setShowHypothesis(false);
-      setPhase("playing");
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "AI裁判没有回应");
-      setPhase("playing");
+      const data = await atlasRequest({ mode: "chart", thought, map: mapContext() });
+      const parent = atlas.nodes.find((node) => node.name === data.parent_hint) || atlas.nodes[0];
+      const id = `charted-${Date.now()}`;
+      const angle = atlas.nodes.length * 137.5 * Math.PI / 180;
+      const node: AtlasNode = {
+        id,
+        name: data.node.name,
+        field: data.node.field,
+        hook: data.node.hook,
+        x: clamp(parent.x + Math.cos(angle) * 18),
+        y: clamp(parent.y + Math.sin(angle) * 16),
+        status: "frontier",
+        connectionReason: data.nav_note,
+      };
+      setAtlas((current) => ({
+        ...current,
+        nodes: [...current.nodes, node],
+        edges: [...current.edges, { from: parent.id, to: id, kind: "bridge" }],
+      }));
+      setNewNodeIds([id]);
+      setChartInput("");
+      setSelectedId(id);
+      setPanelStage("summary");
+      setToast(data.nav_note);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "坐标绘制失败");
+    } finally {
+      setCharting(false);
     }
   }
 
-  function useObject(object: WorldObject) {
-    setAction(`我仔细检查${object.name}，并尝试改变它的一个条件做对照实验。`);
+  function onPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if ((event.target as HTMLElement).closest("button, input, textarea")) return;
+    drag.current = { active: true, x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+    event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  function resetExpedition() {
-    setPhase("landing");
-    setWorld(null);
-    setToken("");
-    setAction("");
-    setHypothesis("");
-    setLatestObservation("");
-    setConsequence("");
-    setEvidence([]);
-    setTurns([]);
-    setTurnsUsed(0);
-    setSuggestions([]);
-    setShowHypothesis(false);
-    setResult(null);
-    setError("");
+  function onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!drag.current.active) return;
+    setPan({ x: drag.current.panX + event.clientX - drag.current.x, y: drag.current.panY + event.clientY - drag.current.y });
   }
 
-  if (phase === "generating") {
-    return (
-      <main className="generation-screen">
-        <div className="star-field" aria-hidden="true" />
-        <div className="forming-world" aria-hidden="true"><span /></div>
-        <p>AI WORLD ENGINE</p>
-        <h1>{GENERATION_LINES[generationLine]}<span>…</span></h1>
-        <small>这通常需要十几秒。它正在生成规律，而不只是在写一段故事。</small>
-      </main>
-    );
+  function onPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    drag.current.active = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
-  if (phase === "landing") {
-    return (
-      <main className="landing-screen">
-        <div className="star-field" aria-hidden="true" />
-        <header className="minimal-header">
-          <div className="wordmark"><i>✦</i><span>星火档案</span></div>
-          <div className={`engine-state ${engine}`}><i />{engine === "checking" ? "连接世界引擎" : engine === "ready" ? "AI世界引擎在线" : "AI世界引擎未连接"}</div>
-        </header>
-
-        <section className="landing-content">
-          <p className="overline">每次远征，都是第一次</p>
-          <h1>告诉我一种最近<br />让你有点好奇的东西。</h1>
-          <p className="landing-copy">AI会据此创造一颗此前不存在的星球，并暗中写下一条规律。你有六次行动，找出它。</p>
-
-          <div className="curiosity-input">
-            <textarea
-              value={curiosity}
-              onChange={(event) => setCuriosity(event.target.value)}
-              placeholder="比如：为什么人会相信谣言 / 蘑菇 / 时间 / 我也不知道……"
-              maxLength={180}
-              aria-label="最近好奇的事情"
-            />
-            <button type="button" onClick={createWorld} disabled={engine === "checking"}>
-              生成一颗不存在的星球 <span>→</span>
-            </button>
-          </div>
-          {error ? <div className="engine-error" role="alert">{error}</div> : null}
-
-          <div className="how-it-works" aria-label="玩法说明">
-            <div><b>01</b><span>AI暗中生成<br />一条世界规律</span></div>
-            <div><b>02</b><span>你可以进行<br />任何自由实验</span></div>
-            <div><b>03</b><span>用六次行动<br />证明你的假说</span></div>
-          </div>
-        </section>
-
-        <footer className="landing-footer">没有题库 · 没有固定选项 · 没有预制答案</footer>
-      </main>
-    );
+  function onWheel(event: WheelEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setZoom((current) => Math.max(.72, Math.min(1.45, current - event.deltaY * .001)));
   }
 
-  if (phase === "complete" && world && result) {
-    const success = result.verdict === "hit";
-    return (
-      <main className="result-screen">
-        <div className="star-field" aria-hidden="true" />
-        <section className="result-card">
-          <p className="overline">EXPEDITION COMPLETE · {world.title}</p>
-          <div className={`result-score ${success ? "success" : "revealed"}`}>{result.score}<small>%</small></div>
-          <h1>{success ? "你抓住了这个世界的规律。" : "世界在能量耗尽时揭开了答案。"}</h1>
-          <p className="result-feedback">{result.feedback}</p>
-
-          <div className="reveal-card">
-            <span>隐藏规律</span>
-            <h2>{result.reveal}</h2>
-            <p>{result.rule_explanation}</p>
-            <small>它连接到真实世界的「{result.domain}」</small>
-          </div>
-
-          <div className="thinking-signature">
-            <span>这次远征中的你</span>
-            <b>{result.curiosity_signature}</b>
-          </div>
-          <button className="new-world-button" type="button" onClick={resetExpedition}>让AI再生成一颗星球 <span>→</span></button>
-        </section>
-      </main>
-    );
+  function resetAtlas() {
+    setAtlas(INITIAL_ATLAS);
+    setSelectedId(null);
+    setIntroOpen(true);
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    window.localStorage.removeItem(STORAGE_KEY);
   }
-
-  if (!world) return null;
-
-  const mustGuess = turnsUsed >= MAX_TURNS;
-  const busy = phase === "judging";
 
   return (
-    <main className="expedition-screen">
-      <header className="expedition-header">
-        <button className="wordmark" type="button" onClick={resetExpedition}><i>✦</i><span>星火档案</span></button>
-        <div className="world-name"><span>当前星球</span><b>{world.title}</b></div>
-        <div className="turn-counter" aria-label={`已经使用${turnsUsed}次行动，共${MAX_TURNS}次`}>
-          <span>探测能量</span>
-          <div>{Array.from({ length: MAX_TURNS }, (_, index) => <i key={index} className={index < turnsUsed ? "used" : ""} />)}</div>
-          <b>{MAX_TURNS - turnsUsed}</b>
+    <main className="atlas-shell">
+      <header className="atlas-header">
+        <button className="atlas-brand" type="button" onClick={() => setIntroOpen(true)}>
+          <i>✦</i><span><b>星火档案</b><small>个人知识宇宙</small></span>
+        </button>
+        <div className="voyage-objective">
+          <span>本次航行</span>
+          <b>{diversity >= 3 ? "已跨越三个领域" : `再点亮 ${3 - diversity} 个不同领域`}</b>
+          <div><i style={{ width: `${Math.min(diversity / 3 * 100, 100)}%` }} /></div>
+        </div>
+        <div className="atlas-stats">
+          <span><b>{discovered.length}</b> 已点亮</span>
+          <span><b>{diversity}</b> 个领域</span>
+          <span className={`engine-indicator ${engine}`}><i />{engine === "ready" ? "AI在线" : engine === "checking" ? "连接中" : "AI离线"}</span>
         </div>
       </header>
 
-      <div className="expedition-layout">
-        <section className="world-stage">
-          <div className="world-orb" aria-hidden="true"><span /></div>
-          <p className="overline">{world.subtitle}</p>
-          <h1>{world.title}</h1>
+      <section
+        className="map-viewport"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onWheel={onWheel}
+        aria-label="可拖拽和缩放的个人知识星图"
+      >
+        <div className="cosmic-fog fog-a" aria-hidden="true" />
+        <div className="cosmic-fog fog-b" aria-hidden="true" />
+        <div
+          className="map-canvas"
+          style={{ transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom})` }}
+        >
+          <div className="map-grid" aria-hidden="true" />
+          <svg className="edge-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            {atlas.edges.map((edge, index) => {
+              const from = atlas.nodes.find((node) => node.id === edge.from);
+              const to = atlas.nodes.find((node) => node.id === edge.to);
+              if (!from || !to) return null;
+              return <line key={`${edge.from}-${edge.to}-${index}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} className={`edge-${edge.kind}`} vectorEffect="non-scaling-stroke" />;
+            })}
+          </svg>
 
-          {turns.length === 0 ? (
-            <div className="arrival-text">
-              <p>{world.arrival}</p>
-              <p>{world.scene}</p>
-            </div>
-          ) : null}
+          {atlas.nodes.map((node) => (
+            <button
+              key={node.id}
+              type="button"
+              className={`star-node status-${node.status} ${selectedId === node.id ? "selected" : ""} ${newNodeIds.includes(node.id) ? "newborn" : ""}`}
+              style={{ left: `${node.x}%`, top: `${node.y}%` }}
+              onClick={(event) => { event.stopPropagation(); selectNode(node); }}
+              aria-label={`${node.name}，${node.field}，${node.status === "discovered" ? "已点亮" : node.status === "origin" ? "起点" : "可以探索"}`}
+            >
+              <span className="star-rings" />
+              <i>{node.status === "discovered" ? "✦" : node.status === "origin" ? "◎" : ""}</i>
+              <span className="star-label"><small>{node.field}</small><b>{node.name}</b></span>
+            </button>
+          ))}
+        </div>
 
-          <article className="observation-card">
-            <span>{turns.length === 0 ? "最初的异常" : `第 ${turnsUsed} 次观测`}</span>
-            <p>{busy ? "世界正在计算你的行动会造成什么后果……" : latestObservation}</p>
-            {!busy && consequence ? <small>{consequence}</small> : null}
-          </article>
+        <div className="map-controls">
+          <button type="button" onClick={() => setZoom((value) => Math.min(1.45, value + .12))} aria-label="放大星图">＋</button>
+          <button type="button" onClick={() => setZoom((value) => Math.max(.72, value - .12))} aria-label="缩小星图">−</button>
+          <button type="button" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} aria-label="回到星图中心">⌾</button>
+        </div>
 
-          {!mustGuess && !showHypothesis ? (
-            <section className="action-console">
-              <label htmlFor="action-input">你要做什么？</label>
-              <p>描述行动，而不是向AI索要答案。越像实验，得到的证据越好。</p>
-              <textarea
-                id="action-input"
-                value={action}
-                onChange={(event) => setAction(event.target.value)}
-                onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") performAction(); }}
-                placeholder="例如：我把两只相同的杯子分别交给本地人和机器人，观察它们的变化……"
-                maxLength={320}
-                disabled={busy}
-              />
-              <div className="console-actions">
-                <button className="hypothesis-link" type="button" onClick={() => setShowHypothesis(true)}>我已经发现规律</button>
-                <button className="perform-button" type="button" onClick={() => performAction()} disabled={busy || !action.trim()}>{busy ? "世界演算中…" : "执行实验"}<span>→</span></button>
-              </div>
-            </section>
-          ) : (
-            <section className="hypothesis-console">
-              <p className="overline">{mustGuess ? "能量耗尽 · 最后一次判断" : "SUBMIT A THEORY"}</p>
-              <label htmlFor="hypothesis-input">这个世界真正的规律是什么？</label>
-              <textarea
-                id="hypothesis-input"
-                value={hypothesis}
-                onChange={(event) => setHypothesis(event.target.value)}
-                placeholder="我的假说是……它能够解释……"
-                maxLength={320}
-                disabled={busy}
-              />
-              <div className="console-actions">
-                {!mustGuess ? <button className="hypothesis-link" type="button" onClick={() => setShowHypothesis(false)}>再做一次实验</button> : <span />}
-                <button className="perform-button" type="button" onClick={submitHypothesis} disabled={busy || !hypothesis.trim()}>{busy ? "AI裁判正在比对证据…" : "提交假说"}<span>→</span></button>
-              </div>
-            </section>
-          )}
+        <div className="map-legend">
+          <span><i className="legend-frontier" />等待探索</span>
+          <span><i className="legend-lit" />已经点亮</span>
+          <span><i className="legend-bridge" />跨学科连接</span>
+        </div>
 
-          {error ? <div className="play-error" role="alert">{error}</div> : null}
-
-          {!showHypothesis && !mustGuess ? (
-            <div className="experiment-prompts">
-              {(suggestions.length ? suggestions : world.objects.map((object) => `检查${object.name}`)).slice(0, 3).map((suggestion, index) => (
-                <button
-                  key={suggestion}
-                  type="button"
-                  onClick={() => suggestions.length ? setAction(suggestion) : useObject(world.objects[index])}
-                >
-                  <span>{suggestion}</span><i>↗</i>
-                </button>
-              ))}
-            </div>
-          ) : null}
+        <section className="navigator-bar">
+          <div><i>✦</i><span><small>AI制图员</small><b>{charting ? "正在寻找这个念头的坐标…" : "把任何念头画进你的宇宙"}</b></span></div>
+          <input
+            value={chartInput}
+            onChange={(event) => setChartInput(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Enter") chartThought(); }}
+            placeholder="例如：为什么最近总感觉时间过得很快？"
+            maxLength={240}
+            disabled={charting}
+            aria-label="把一个问题变成知识星"
+          />
+          <button type="button" onClick={chartThought} disabled={charting || !chartInput.trim()} aria-label="绘制新坐标">↗</button>
         </section>
+      </section>
 
-        <aside className="evidence-board">
-          <header><span>证据板</span><b>{evidence.length}</b></header>
-          {evidence.length === 0 ? (
-            <div className="empty-evidence">
-              <i>?</i>
-              <p>实验之后，AI会从世界反应中提取客观证据。</p>
+      {introOpen ? (
+        <section className="intro-card" role="dialog" aria-modal="false" aria-labelledby="intro-title">
+          <button type="button" className="panel-close" onClick={() => setIntroOpen(false)} aria-label="关闭介绍">×</button>
+          <p>你的宇宙从八个微弱信号开始</p>
+          <h1 id="intro-title">不是选一个专业。<br />是先看见世界有多大。</h1>
+          <span>点击任意发光星星，进行一次2分钟微远征。每次点亮都会留下记录，并由AI生长出三条新的知识航路。</span>
+          <button type="button" className="intro-action" onClick={() => setIntroOpen(false)}>开始观察星图 <b>→</b></button>
+        </section>
+      ) : null}
+
+      {selectedNode ? (
+        <aside className="exploration-panel" aria-label={`${selectedNode.name}探索舱`}>
+          <header>
+            <span>{selectedNode.status === "discovered" ? "已点亮的知识星" : selectedNode.status === "origin" ? "知识宇宙中心" : "等待探索的信号"}</span>
+            <button type="button" className="panel-close" onClick={closePanel} aria-label="关闭探索舱">×</button>
+          </header>
+
+          {panelStage === "summary" ? (
+            <div className="panel-content summary-stage">
+              <p className="field-tag">{selectedNode.field}</p>
+              <h2>{selectedNode.name}</h2>
+              <p className="node-hook">{selectedNode.hook}</p>
+              {selectedNode.connectionReason ? <blockquote>{selectedNode.connectionReason}</blockquote> : null}
+              {selectedNode.spark ? (
+                <div className="stored-spark"><span>你带回的知识火种</span><b>{selectedNode.spark.title}</b><p>{selectedNode.spark.insight}</p></div>
+              ) : null}
+              {selectedNode.status !== "origin" ? (
+                <button className="launch-button" type="button" onClick={startEncounter} disabled={engine !== "ready"}>
+                  {selectedNode.status === "discovered" ? "从这里继续延伸" : "生成这次微远征"}<span>→</span>
+                </button>
+              ) : (
+                <div className="origin-note"><b>{atlas.nodes.length - 1}</b><span>颗知识星正在围绕你的好奇心生长。</span></div>
+              )}
+              {engine === "offline" && selectedNode.status !== "origin" ? <small className="offline-note">AI导航员未连接，无法临时生成探索内容。</small> : null}
             </div>
-          ) : (
-            <div className="evidence-list">
-              {evidence.map((item, index) => (
-                <article key={`${item.title}-${index}`}>
-                  <div><span>证据 {String(index + 1).padStart(2, "0")}</span><b>{item.relevance}%</b></div>
-                  <h2>{item.title}</h2>
-                  <p>{item.detail}</p>
-                </article>
-              ))}
+          ) : null}
+
+          {panelStage === "loading" ? (
+            <div className="panel-content loading-stage"><div className="scan-orb"><i /></div><h2>正在接收这颗星的信号</h2><p>AI正在从这个领域里挑选一个值得两分钟的反常现象。</p></div>
+          ) : null}
+
+          {panelStage === "question" && encounter ? (
+            <div className="panel-content question-stage">
+              <p className="field-tag">2分钟微远征 · {selectedNode.field}</p>
+              <h2>{selectedNode.name}</h2>
+              <div className="phenomenon"><span>你观察到</span><p>{encounter.scene}</p></div>
+              <label htmlFor="intuition-answer">{encounter.question}</label>
+              <textarea id="intuition-answer" value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="写下第一反应即可，不需要知道术语……" maxLength={280} />
+              <div className="quick-starts">
+                {encounter.quick_starts.map((item) => <button type="button" key={item} onClick={() => setAnswer(item)}>{item}</button>)}
+              </div>
+              <button className="launch-button" type="button" onClick={resolveEncounter} disabled={!answer.trim()}>看看这个直觉通向哪里 <span>→</span></button>
             </div>
-          )}
-          {turns.length ? (
-            <details className="action-history">
-              <summary>查看你的行动记录</summary>
-              {turns.map((turn, index) => <p key={`${turn.action}-${index}`}><b>{index + 1}</b>{turn.action}</p>)}
-            </details>
+          ) : null}
+
+          {panelStage === "resolving" ? (
+            <div className="panel-content loading-stage"><div className="scan-orb resolving"><i /></div><h2>正在连接你的直觉</h2><p>AI正在把这次回答连接到已有知识，并寻找一条意外的新航路。</p></div>
+          ) : null}
+
+          {panelStage === "reveal" && resolution ? (
+            <div className="panel-content reveal-stage">
+              <p className="field-tag">远征完成 · 星图正在生长</p>
+              <h2>{resolution.spark.title}</h2>
+              <p className="ai-reply">{resolution.reply}</p>
+              <div className="spark-reward"><span>知识火种</span><p>{resolution.spark.insight}</p><small>{resolution.spark.field}</small></div>
+              <blockquote>{resolution.bridge_statement}</blockquote>
+              <div className="new-routes">
+                <span>刚刚出现的三条航路</span>
+                {resolution.next_nodes.map((node) => <div key={`${node.kind}-${node.name}`}><i className={`route-${node.kind}`} /> <b>{node.name}</b><small>{node.field}</small></div>)}
+              </div>
+              <button className="launch-button" type="button" onClick={closePanel}>看它们在星图上亮起 <span>→</span></button>
+            </div>
           ) : null}
         </aside>
-      </div>
+      ) : null}
+
+      <button className="reset-atlas" type="button" onClick={resetAtlas}>重置这片宇宙</button>
+      {toast ? <div className="atlas-toast" role="status"><i>✦</i>{toast}</div> : null}
     </main>
   );
 }
