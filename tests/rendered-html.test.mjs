@@ -23,8 +23,9 @@ test("server-renders the personal knowledge atlas", async () => {
   assert.match(html, /星火档案/);
   assert.match(html, /个人知识天球图/);
   assert.match(html, /未完成问题的天球图/);
-  assert.match(html, /世界由许多/);
-  assert.match(html, /尚未完成的句子组成/);
+  assert.match(html, /你被一个专业录取/);
+  assert.match(html, /世界不止一个专业/);
+  assert.match(html, /百门计划/);
   assert.match(html, /写下一件你最近无法解释的事/);
 });
 

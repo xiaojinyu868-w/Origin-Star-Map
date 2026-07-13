@@ -1,6 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
+
+export const viewport: Viewport = { themeColor: "#080907" };
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -14,16 +16,16 @@ export async function generateMetadata(): Promise<Metadata> {
       default: "星火档案｜未完成问题的天球图",
       template: "%s｜星火档案",
     },
-    description: "一座只为你生长的夜间天文档案馆。观测陌生领域，让走过的问题慢慢成为星座。",
+    description: "在100个领域里各带走一个提问起点，让AI把走过的知识连成你的个人星座。",
     openGraph: {
       title: "星火档案｜未完成问题的天球图",
-      description: "观测陌生领域，让走过的问题慢慢成为星座。",
+      description: "探索100个领域，让AI把走过的知识连成你的个人星座。",
       type: "website",
     },
     twitter: {
       card: "summary",
       title: "星火档案｜未完成问题的天球图",
-      description: "观测陌生领域，让走过的问题慢慢成为星座。",
+      description: "探索100个领域，让AI把走过的知识连成你的个人星座。",
     },
   };
 }
