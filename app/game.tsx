@@ -31,7 +31,8 @@ type KnowledgeRecord = {
 type AtlasNode = { id: string; name: string; field: string; hook: string; status: NodeStatus; sector?: SectorKey; spark?: Spark; knowledge?: KnowledgeRecord; connectionReason?: string };
 type AtlasEdge = { from: string; to: string; kind: EdgeKind; reason?: string; traversed?: boolean; createdAt?: number };
 type Constellation = { id: string; name: string; line: string; motif: string; nodeIds: string[] };
-type AtlasState = { version: 6; nodes: AtlasNode[]; edges: AtlasEdge[]; profileSignals: string[]; expeditions: number; constellations: Constellation[]; trail: string[] };
+type KnowledgeVolume = { id: string; name: string; line: string; law: string; faceIds: string[]; nodeIds: string[] };
+type AtlasState = { version: 7; nodes: AtlasNode[]; edges: AtlasEdge[]; profileSignals: string[]; expeditions: number; constellations: Constellation[]; volumes: KnowledgeVolume[]; trail: string[] };
 type Encounter = { signal: string; question: string; interaction: Interaction; choices: string[]; choice_visuals?: ChoiceVisual[]; visual_context?: VisualContext | null; scale: { left: string; right: string } | null; items: string[]; visual: "pulse" | "orbit" | "split" | "network" | "scale"; token: string };
 type Resolution = { verdict: Verdict; echo: string; answer_title: string; scene: string; explanation: string; terms: Array<{ term: string; meaning: string }>; why_it_matters: string; transfer: string; spark: Spark; profile_signal: string; source_note: string; next_nodes: NextNode[]; player_answer: string };
 type PanelStage = "summary" | "loading" | "observe" | "resolving" | "reveal";
@@ -41,8 +42,8 @@ type FlightDirection = "up" | "down" | "left" | "right";
 type FlightTrace = { from: string; to: string; serial: number };
 type FlightFeedback = { kind: "arrive" | "blocked"; serial: number };
 
-const STORAGE_KEY = "spark-atlas-v6";
-const OLD_STORAGE_KEYS = ["spark-atlas-v5", "spark-atlas-v4", "spark-atlas-v3"];
+const STORAGE_KEY = "spark-atlas-v7";
+const OLD_STORAGE_KEYS = ["spark-atlas-v6", "spark-atlas-v5", "spark-atlas-v4", "spark-atlas-v3"];
 const SECTORS: Array<{ key: SectorKey; label: string; angle: number; description: string; color: string }> = [
   { key: "life", label: "生命", angle: -150, description: "会生长、竞争与合作的世界", color: "#a8b68f" },
   { key: "mind", label: "心智", angle: -90, description: "感知、语言与自我的边界", color: "#aaa3c2" },
@@ -91,12 +92,13 @@ const SEED_NODES: AtlasNode[] = [
 ];
 
 const INITIAL_ATLAS: AtlasState = {
-  version: 6,
+  version: 7,
   nodes: SEED_NODES,
   edges: SEED_NODES.slice(1).map((node) => ({ from: "origin", to: node.id, kind: "normal", reason: "从一个未完成的问题出发", traversed: false, createdAt: 0 })),
   profileSignals: [],
   expeditions: 0,
   constellations: [],
+  volumes: [],
   trail: [],
 };
 
@@ -105,19 +107,25 @@ function dedupeConstellations(items: Constellation[]) {
   return items.filter((item) => { const key = item.name.trim().replace(/\s+/g, ""); if (!key || seen.has(key)) return false; seen.add(key); return true; });
 }
 
+function dedupeVolumes(items: KnowledgeVolume[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => { const key = item.name.trim().replace(/\s+/g, ""); if (!key || seen.has(key)) return false; seen.add(key); return true; });
+}
+
 function migrateAtlas(value: unknown): AtlasState | null {
   if (!value || typeof value !== "object") return null;
-  const raw = value as { version?: number; nodes?: AtlasNode[]; edges?: AtlasEdge[]; profileSignals?: string[]; expeditions?: number; constellations?: Constellation[]; trail?: string[] };
+  const raw = value as { version?: number; nodes?: AtlasNode[]; edges?: AtlasEdge[]; profileSignals?: string[]; expeditions?: number; constellations?: Constellation[]; volumes?: KnowledgeVolume[]; trail?: string[] };
   if (!Array.isArray(raw.nodes) || !Array.isArray(raw.edges)) return null;
   const nodes = raw.nodes.map((node) => ({ ...node, sector: sectorFor(node) }));
-  const edges = raw.edges.map((edge) => ({ ...edge, reason: edge.reason || nodes.find((node) => node.id === edge.to)?.connectionReason || "由一次选择相连", traversed: Boolean(edge.traversed), createdAt: edge.createdAt || 0 }));
+  const edges = raw.edges.map((edge) => ({ ...edge, reason: edge.reason || nodes.find((node) => node.id === edge.to)?.connectionReason || "由一次选择相连", traversed: Boolean(edge.traversed || nodes.find((node) => node.id === edge.to)?.status === "discovered"), createdAt: edge.createdAt || 0 }));
   return {
-    version: 6,
+    version: 7,
     nodes,
     edges,
     profileSignals: raw.profileSignals || [],
     expeditions: raw.expeditions || 0,
     constellations: dedupeConstellations(raw.constellations || []),
+    volumes: dedupeVolumes(raw.volumes || []),
     trail: raw.trail || nodes.filter((node) => node.status === "discovered").map((node) => node.id),
   };
 }
@@ -160,6 +168,22 @@ function projectAtlas(nodes: AtlasNode[], base: Map<string, AtlasPosition>, acti
 
 function constellationPosition(constellation: Constellation, positions: Map<string, { x: number; y: number }>) {
   const points = constellation.nodeIds.map((id) => positions.get(id)).filter(Boolean) as Array<{ x: number; y: number }>;
+  if (!points.length) return null;
+  return { x: roundCoord(points.reduce((sum, point) => sum + point.x, 0) / points.length), y: roundCoord(points.reduce((sum, point) => sum + point.y, 0) / points.length) };
+}
+
+function faceGeometry(face: Constellation, positions: Map<string, { x: number; y: number }>) {
+  const points = face.nodeIds.map((id) => positions.get(id)).filter(Boolean) as Array<{ x: number; y: number }>;
+  if (points.length < 3) return null;
+  return {
+    points: points.map((point) => `${point.x},${point.y}`).join(" "),
+    x: roundCoord(points.reduce((sum, point) => sum + point.x, 0) / points.length),
+    y: roundCoord(points.reduce((sum, point) => sum + point.y, 0) / points.length),
+  };
+}
+
+function volumePosition(volume: KnowledgeVolume, positions: Map<string, { x: number; y: number }>) {
+  const points = volume.nodeIds.map((id) => positions.get(id)).filter(Boolean) as Array<{ x: number; y: number }>;
   if (!points.length) return null;
   return { x: roundCoord(points.reduce((sum, point) => sum + point.x, 0) / points.length), y: roundCoord(points.reduce((sum, point) => sum + point.y, 0) / points.length) };
 }
@@ -301,6 +325,7 @@ export function CuriosityGame() {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [constellationReveal, setConstellationReveal] = useState<Constellation | null>(null);
+  const [volumeReveal, setVolumeReveal] = useState<KnowledgeVolume | null>(null);
   const [toast, setToast] = useState("");
   const [newNodeIds, setNewNodeIds] = useState<string[]>([]);
   const [storageReady, setStorageReady] = useState(false);
@@ -317,6 +342,7 @@ export function CuriosityGame() {
   const observationRef = useRef<HTMLElement>(null);
   const archiveRef = useRef<HTMLElement>(null);
   const constellationRef = useRef<HTMLElement>(null);
+  const volumeRef = useRef<HTMLElement>(null);
   const resetRef = useRef<HTMLElement>(null);
 
   const nodeById = useMemo(() => new Map(atlas.nodes.map((node) => [node.id, node])), [atlas.nodes]);
@@ -335,6 +361,9 @@ export function CuriosityGame() {
   const constellationWaiting = atlas.constellations.length < Math.floor(atlas.expeditions / 3);
   const observationsRemaining = constellationWaiting ? 0 : 3 - expeditionStep;
   const uniqueConstellations = useMemo(() => dedupeConstellations(atlas.constellations), [atlas.constellations]);
+  const uniqueVolumes = useMemo(() => dedupeVolumes(atlas.volumes), [atlas.volumes]);
+  const traversedEdges = useMemo(() => atlas.edges.filter((edge) => edge.traversed).length, [atlas.edges]);
+  const facesUntilVolume = 3 - uniqueConstellations.length % 3 || 3;
   const visibleNodes = useMemo(() => activeSector === "all" ? atlas.nodes : atlas.nodes.filter((node) => node.id !== "origin" && sectorFor(node) === activeSector), [activeSector, atlas.nodes]);
   const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
   const visibleNavigatorNode = navigatorId && visibleNodeIds.has(navigatorId) ? nodeById.get(navigatorId) || null : null;
@@ -345,18 +374,25 @@ export function CuriosityGame() {
   const traceFrom = flightTrace ? positions.get(flightTrace.from) || null : null;
   const traceTo = flightTrace ? positions.get(flightTrace.to) || null : null;
   const activeSectorInfo = activeSector === "all" ? null : sectorInfo(activeSector);
-  const overlayKey = resetOpen ? "reset" : constellationReveal ? "constellation" : archiveOpen ? "archive" : selectedId ? "observation" : introOpen && storageReady ? "intro" : "";
+  const overlayKey = resetOpen ? "reset" : volumeReveal ? "volume" : constellationReveal ? "constellation" : archiveOpen ? "archive" : selectedId ? "observation" : introOpen && storageReady ? "intro" : "";
   const latestProfile = atlas.profileSignals.at(-1) || "你的好奇心轮廓会随着探索逐渐显影";
 
   useEffect(() => {
     try {
-      let saved = window.localStorage.getItem(STORAGE_KEY);
-      if (!saved) for (const key of OLD_STORAGE_KEYS) { saved = window.localStorage.getItem(key); if (saved) break; }
-      const migrated = saved ? migrateAtlas(JSON.parse(saved)) : null;
+      let migrated: AtlasState | null = null;
+      for (const key of [STORAGE_KEY, ...OLD_STORAGE_KEYS]) {
+        const saved = window.localStorage.getItem(key);
+        if (!saved) continue;
+        try {
+          const candidate = migrateAtlas(JSON.parse(saved));
+          const candidateScore = candidate ? candidate.expeditions * 1000 + candidate.constellations.length * 10 + candidate.volumes.length : -1;
+          const currentScore = migrated ? migrated.expeditions * 1000 + migrated.constellations.length * 10 + migrated.volumes.length : -1;
+          if (candidate && candidateScore > currentScore) migrated = candidate;
+        } catch { window.localStorage.removeItem(key); }
+      }
       // Browser storage is an external system; restore it once after mounting.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (migrated) { setAtlas(migrated); setIntroOpen(false); }
-    } catch { window.localStorage.removeItem(STORAGE_KEY); } finally { setStorageReady(true); }
+    } finally { setStorageReady(true); }
     fetch("/api/atlas").then((response) => response.json()).then((data) => setEngine(data.connected ? "ready" : "offline")).catch(() => setEngine("offline"));
   }, []);
 
@@ -366,7 +402,7 @@ export function CuriosityGame() {
   useEffect(() => { if (!charting && stage !== "loading" && stage !== "resolving") return; const timer = window.setInterval(() => setWaitBeat((beat) => (beat + 1) % 3), 1350); return () => window.clearInterval(timer); }, [charting, stage]);
   useEffect(() => {
     if (!overlayKey) return;
-    const target = overlayKey === "reset" ? resetRef.current : overlayKey === "constellation" ? constellationRef.current : overlayKey === "archive" ? archiveRef.current : overlayKey === "observation" ? observationRef.current : introRef.current;
+    const target = overlayKey === "reset" ? resetRef.current : overlayKey === "volume" ? volumeRef.current : overlayKey === "constellation" ? constellationRef.current : overlayKey === "archive" ? archiveRef.current : overlayKey === "observation" ? observationRef.current : introRef.current;
     const previous = document.activeElement as HTMLElement | null;
     const frame = window.requestAnimationFrame(() => target?.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled]), summary")?.focus());
     return () => { window.cancelAnimationFrame(frame); previous?.focus?.(); };
@@ -378,6 +414,7 @@ export function CuriosityGame() {
   function closeObservation() { requestSerial.current += 1; setSelectedId(null); setStage("summary"); clearObservation(); }
   function closeTopOverlay() {
     if (resetOpen) setResetOpen(false);
+    else if (volumeReveal) setVolumeReveal(null);
     else if (constellationReveal) setConstellationReveal(null);
     else if (archiveOpen) setArchiveOpen(false);
     else if (selectedId) closeObservation();
@@ -468,18 +505,44 @@ export function CuriosityGame() {
 
   function pickArrangeItem(item: string) { setArranged((current) => current.includes(item) ? current.filter((entry) => entry !== item) : [...current, item]); haptic(5); }
 
+  async function nameVolumeIfDue(faces: Constellation[]) {
+    const earnedVolumes = Math.floor(faces.length / 3);
+    if (earnedVolumes === 0 || uniqueVolumes.length >= earnedVolumes) return;
+    const recentFaces = faces.slice(-3);
+    try {
+      const data = await atlasRequest({ mode: "volume", faces: recentFaces.map((face) => ({ name: face.name, line: face.line, motif: face.motif })), existing_names: uniqueVolumes.map((item) => item.name) });
+      let name = String(data.name || "迁移之体");
+      if (uniqueVolumes.some((item) => item.name.replace(/\s/g, "") === name.replace(/\s/g, ""))) name = `${String(data.law || "迁移").slice(0, 6)}体`;
+      const volume: KnowledgeVolume = {
+        id: `volume-${earnedVolumes}`,
+        name,
+        line: String(data.line || "三个问题形状折叠成了一种可以迁移的看法"),
+        law: String(data.law || "遇到新问题时，先寻找同一种关系是否也在这里出现。"),
+        faceIds: recentFaces.map((face) => face.id),
+        nodeIds: [...new Set(recentFaces.flatMap((face) => face.nodeIds))],
+      };
+      setAtlas((current) => current.volumes.some((item) => item.id === volume.id) ? current : { ...current, volumes: [...current.volumes, volume] });
+      setConstellationReveal(null); setVolumeReveal(volume); haptic([18, 45, 18, 45, 18, 70, 30]);
+    } catch { setToast("三张解释面已经闭合；世界模型还在寻找最准确的名字"); }
+  }
+
   async function nameConstellationIfDue() {
     const earnedConstellations = Math.floor(atlas.expeditions / 3);
     if (earnedConstellations === 0 || uniqueConstellations.length >= earnedConstellations) return;
-    const recent = discovered.slice(-3).map((node) => ({ name: node.name, field: node.field, spark: node.spark?.insight }));
-    if (recent.length < 3) return;
+    const orderedDiscoveries = atlas.trail.map((id) => nodeById.get(id)).filter((node): node is AtlasNode => Boolean(node && node.status === "discovered"));
+    const orderedSource = orderedDiscoveries.length >= discovered.length ? orderedDiscoveries : [...discovered].sort((a, b) => (a.knowledge?.discoveredAt || 0) - (b.knowledge?.discoveredAt || 0));
+    const faceNodes = orderedSource.slice(uniqueConstellations.length * 3, uniqueConstellations.length * 3 + 3);
+    const recent = faceNodes.map((node) => ({ name: node.name, field: node.field, spark: node.spark?.insight }));
+    if (faceNodes.length < 3) return;
     try {
       const data = await atlasRequest({ mode: "constellation", recent_nodes: recent, profile_signals: atlas.profileSignals, existing_names: uniqueConstellations.map((item) => item.name) });
-      let name = String(data.name || "未命名星座");
-      if (uniqueConstellations.some((item) => item.name.replace(/\s/g, "") === name.replace(/\s/g, ""))) name = `${String(data.motif || "远近之间").slice(0, 8)}星座`;
-      const constellation: Constellation = { id: `constellation-${atlas.constellations.length + 1}`, name, line: data.line, motif: data.motif, nodeIds: discovered.slice(-3).map((node) => node.id) };
-      setAtlas((current) => ({ ...current, constellations: [...current.constellations, constellation] })); setConstellationReveal(constellation); haptic([12, 50, 12, 50, 24]);
-    } catch { setToast("这组星还没有决定自己的名字；下一条航线会再试一次"); }
+      let name = String(data.name || "未命名解释面");
+      if (uniqueConstellations.some((item) => item.name.replace(/\s/g, "") === name.replace(/\s/g, ""))) name = `${String(data.motif || "远近之间").slice(0, 8)}面`;
+      const constellation: Constellation = { id: `constellation-${atlas.constellations.length + 1}`, name, line: data.line, motif: data.motif, nodeIds: faceNodes.map((node) => node.id) };
+      const nextFaces = [...uniqueConstellations, constellation];
+      setAtlas((current) => current.constellations.some((item) => item.id === constellation.id) ? current : { ...current, constellations: [...current.constellations, constellation] }); setConstellationReveal(constellation); haptic([12, 50, 12, 50, 24]);
+      await nameVolumeIfDue(nextFaces);
+    } catch { setToast("这三个问题还没有闭合成解释面；下一条航线会再试一次"); }
   }
 
   async function chooseRoute(route: NextNode) {
@@ -503,7 +566,12 @@ export function CuriosityGame() {
   }
 
   async function copyConstellation(item: Constellation) {
-    try { await navigator.clipboard.writeText(`我的好奇心星座：${item.name}\n${item.line}\n母题：${item.motif}\n——星火档案`); setToast("星座签已经复制，可以分享给朋友了"); }
+    try { await navigator.clipboard.writeText(`我的知识解释面：${item.name}\n${item.line}\n共同问题：${item.motif}\n——星火档案`); setToast("解释面已经复制，可以分享给朋友了"); }
+    catch { setToast("暂时无法复制；请允许剪贴板权限后再试一次"); }
+  }
+
+  async function copyVolume(item: KnowledgeVolume) {
+    try { await navigator.clipboard.writeText(`我的世界模型：${item.name}\n${item.line}\n迁移法则：${item.law}\n——星火档案`); setToast("世界模型已经复制，可以带去别的问题里了"); }
     catch { setToast("暂时无法复制；请允许剪贴板权限后再试一次"); }
   }
 
@@ -548,8 +616,8 @@ export function CuriosityGame() {
         <div className="camera-crumb" aria-live="polite"><span>知识宇宙</span>{activeSectorInfo ? <><i>／</i><b>{activeSectorInfo.label}星域</b><button type="button" onClick={() => chooseSector("all")}>返回全图 <kbd>Esc</kbd></button></> : <b>六片星域</b>}</div>
 
         <aside className="expedition-brief" aria-label="本轮探索目标">
-          <header><small>第 {expeditionNumber} 次远征</small><span>{constellationWaiting ? "等待命名" : `${expeditionStep} / 3`}</span></header>
-          <h2>{constellationWaiting ? "最近3个问题正在连成一条线" : observationsRemaining === 3 ? "去获得一个新的提问起点" : `再走 ${observationsRemaining} 步，看见你的问题形状`}</h2>
+          <header><small>第 {expeditionNumber} 次远征</small><span>{constellationWaiting ? "正在闭合" : `${expeditionStep} / 3`}</span></header>
+          <h2>{constellationWaiting ? "最近3个问题正在闭合成一张面" : observationsRemaining === 3 ? "去获得一个新的提问起点" : `再走 ${observationsRemaining} 步，让解释面闭合`}</h2>
           <div className="expedition-progress" aria-label={`本轮已完成 ${expeditionStep} 次观测`}>{[0,1,2].map((step) => <i className={step < expeditionStep || constellationWaiting ? "filled" : ""} key={step} />)}</div>
           <button type="button" disabled={!recommended || engine !== "ready"} onClick={lockRecommended}><small>AI 发现：你的地图还缺这一块</small><b>{recommended?.name || "等待新的信号"}</b><span>{recommended?.hook || "写下一个最近无法解释的问题"}</span></button>
         </aside>
@@ -559,20 +627,27 @@ export function CuriosityGame() {
           {activeSector === "all" ? SECTORS.map((sector) => { const center = sectorCenter(sector); const caption = sectorCaption(sector); const total = atlas.nodes.filter((node) => node.id !== "origin" && sectorFor(node) === sector.key).length; const lit = discovered.filter((node) => sectorFor(node) === sector.key).length; return <button type="button" className="chart-sector" key={sector.key} style={{ left: `${center.x}%`, top: `${center.y}%`, "--sector-color": sector.color, "--caption-x": `${caption.x}%`, "--caption-y": `${caption.y}%` } as CSSProperties} onClick={() => chooseSector(sector.key)} aria-label={`进入${sector.label}星域，已探索${lit}个，共${total}颗星`}><span className="sector-caption"><b>{sector.label}</b><small>{lit}/{total}</small></span></button>; }) : <div className="sector-field" style={{ "--sector-color": activeSectorInfo?.color } as CSSProperties} aria-hidden="true"><span>{activeSectorInfo?.label}</span><small>{activeSectorInfo?.description}</small></div>}
 
           <svg className="chart-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            {activeSector === "all" ? uniqueConstellations.map((face) => { const geometry = faceGeometry(face, positions); if (!geometry) return null; return <polygon className="knowledge-face" key={face.id} points={geometry.points} vectorEffect="non-scaling-stroke" />; }) : null}
             {atlas.edges.map((edge, index) => { const from = positions.get(edge.from); const to = positions.get(edge.to); if (!from || !to) return null; const adjacent = edge.from === flightNode?.id || edge.to === flightNode?.id; return <line key={`${edge.from}-${edge.to}-${index}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} className={`${edge.kind} ${edge.traversed ? "traversed" : "untraversed"} ${adjacent ? "adjacent" : ""}`} vectorEffect="non-scaling-stroke" />; })}
             {traceFrom && traceTo && flightTrace ? <line key={flightTrace.serial} className="flight-trace" x1={traceFrom.x} y1={traceFrom.y} x2={traceTo.x} y2={traceTo.y} vectorEffect="non-scaling-stroke" /> : null}
           </svg>
 
           {uniqueConstellations.map((constellation) => { const point = constellationPosition(constellation, positions); if (!point) return null; return <span className="constellation-mark" key={constellation.id} style={{ left: `${point.x}%`, top: `${point.y}%` }} aria-hidden="true"><i /></span>; })}
+          {activeSector === "all" ? uniqueVolumes.map((volume) => { const point = volumePosition(volume, positions); if (!point) return null; return <span className="knowledge-volume-mark" key={volume.id} style={{ left: `${point.x}%`, top: `${point.y}%` }} aria-hidden="true"><i /><i /><i /><b /></span>; }) : null}
 
           {visibleNodes.map((node) => { const position = positions.get(node.id); if (!position) return null; const guided = recommended?.id === node.id; const inspected = inspectedId === node.id; const navigated = flightNode?.id === node.id; const recent = recentIds.has(node.id); const labelVisible = inspected || newNodeIds.includes(node.id); const info = sectorInfo(sectorFor(node)); return <button key={node.id} type="button" className={`archive-star ${node.status} ${guided ? "guided" : ""} ${inspected ? "inspected" : ""} ${navigated ? "navigated" : ""} ${recent ? "recent" : ""} ${newNodeIds.includes(node.id) ? "newborn" : ""} ${labelVisible ? "show-label" : ""} ${position.x > 62 ? "label-left" : ""} ${position.y > 62 ? "label-up" : ""}`} style={{ left: `${position.x}%`, top: `${position.y}%`, "--star-color": info.color } as CSSProperties} onPointerEnter={() => setInspectedId(node.id)} onPointerLeave={() => setInspectedId(null)} onFocus={() => setInspectedId(node.id)} onBlur={() => setInspectedId(null)} onClick={(event) => { event.stopPropagation(); focusNode(node); }} aria-current={navigated ? "true" : undefined} aria-label={`${node.name}，${node.field}，${node.status === "discovered" ? "已归档" : node.status === "origin" ? "起点" : "尚未观测"}`}><span className="star-halo" aria-hidden="true" /><i aria-hidden="true" /><span className="archive-star-label"><small>{node.field}</small><b>{node.name}</b></span></button>; })}
 
           {flightPosition ? <div key={flightFeedback.serial} className={`star-navigator ${flightFeedback.kind}`} style={{ left: `${flightPosition.x}%`, top: `${flightPosition.y}%` }} aria-hidden="true"><i className="navigator-orbit" /><i className="navigator-arrival" /><b /></div> : null}
         </div>
 
-        {uniqueConstellations.length ? <aside className="constellation-index" aria-label="星座索引"><header><small>已经连成的星座</small><b>{uniqueConstellations.length}</b></header><div>{uniqueConstellations.map((constellation) => <button type="button" key={constellation.id} onClick={() => setConstellationReveal(constellation)}><i aria-hidden="true" /><span><b>{constellation.name}</b><small>{constellation.motif}</small></span></button>)}</div></aside> : null}
+        <aside className="structure-index" aria-label="知识结构涌现进度">
+          <header><small>知识结构正在长大</small><b>{uniqueVolumes.length ? `${uniqueVolumes.length} 个模型` : "点 → 边 → 面 → 体"}</b></header>
+          <div className="dimension-ladder" aria-label="点边面体数量"><span><i>点</i><b>{discovered.length}</b><small>见过</small></span><span><i>边</i><b>{traversedEdges}</b><small>连接</small></span><span className={uniqueConstellations.length ? "emerged" : ""}><i>面</i><b>{uniqueConstellations.length}</b><small>解释</small></span><span className={uniqueVolumes.length ? "emerged" : ""}><i>体</i><b>{uniqueVolumes.length}</b><small>迁移</small></span></div>
+          <p className="next-emergence">{uniqueConstellations.length ? `再闭合 ${facesUntilVolume} 张解释面，新的世界模型出现` : `再完成 ${observationsRemaining || 1} 次观测，第一张解释面闭合`}</p>
+          {(uniqueVolumes.length || uniqueConstellations.length) ? <div className="structure-list">{uniqueVolumes.map((volume) => <button className="volume-row" type="button" key={volume.id} onClick={() => setVolumeReveal(volume)}><i aria-hidden="true" /><span><b>{volume.name}</b><small>可迁移的世界模型</small></span></button>)}{uniqueConstellations.slice().reverse().map((face) => <button className="face-row" type="button" key={face.id} onClick={() => setConstellationReveal(face)}><i aria-hidden="true" /><span><b>{face.name}</b><small>{face.motif}</small></span></button>)}</div> : null}
+        </aside>
 
-        <div className="map-legend" aria-hidden="true"><span><i />已走过</span><span><i />可探索</span><span><i />跨领域航线</span></div>
+        <div className="map-legend" aria-hidden="true"><span><i />已走过</span><span><i />可探索</span><span><i />跨领域航线</span><span><i />解释面</span></div>
 
         <aside className="flight-dock" aria-label="星图航行控制">
           <header><small>{activeSector === "all" ? "远景导航" : `${activeSectorInfo?.label}星域 · 局部航行`}</small><span className="desktop-hint">WASD / 方向键</span><button className="question-toggle" type="button" onClick={() => setQuestionOpen((open) => !open)}>{questionOpen ? "收起问题" : "投下问题"}</button></header>
@@ -632,11 +707,13 @@ export function CuriosityGame() {
         </div>
       </section> : null}
 
-      {archiveOpen ? <section ref={archiveRef} className="archive-drawer" role="dialog" aria-modal="true" aria-labelledby="archive-heading" onKeyDown={trapDialog}><header><div><small>百门计划 · 已获得 {fieldCount} / 100 个提问起点</small><h2 id="archive-heading">你的提问地图</h2><p>{latestProfile}</p></div><button className="quiet-close" type="button" onClick={() => setArchiveOpen(false)} aria-label="关闭档案">×</button></header><section className="archive-sector-progress" aria-label="各星域探索进度">{SECTORS.map((sector) => { const total = atlas.nodes.filter((node) => node.id !== "origin" && sectorFor(node) === sector.key).length; const lit = discovered.filter((node) => sectorFor(node) === sector.key).length; return <button type="button" key={sector.key} onClick={() => { setArchiveOpen(false); chooseSector(sector.key); }}><span>{sector.label}<small>{lit}/{total}</small></span><i><b style={{ width: `${total ? lit / total * 100 : 0}%`, background: sector.color }} /></i></button>; })}</section><div className="constellation-list">{uniqueConstellations.length ? uniqueConstellations.map((item, index) => <article key={item.id}><small translate="no">CONSTELLATION {String(index + 1).padStart(2,"0")}</small><h3>{item.name}</h3><p>{item.line}</p><span>{item.motif}</span><button type="button" onClick={() => setConstellationReveal(item)}>展开这组星</button></article>) : <p className="empty-archive">再完成 {observationsRemaining} 次观测，AI 会从你的选择里辨认第一条好奇心母题。</p>}</div><div className="specimen-index"><small>已经带走的提问起点</small>{discovered.map((node, index) => <button type="button" key={node.id} onClick={() => { setArchiveOpen(false); selectNode(node); }}><b>{String(index + 1).padStart(2,"0")}</b><span>{node.name}<small>{node.spark?.insight || node.hook}</small></span><i>{node.field}</i></button>)}</div><button className="reset-link" type="button" onClick={() => setResetOpen(true)}>重新装订这本档案</button></section> : null}
+      {archiveOpen ? <section ref={archiveRef} className="archive-drawer" role="dialog" aria-modal="true" aria-labelledby="archive-heading" onKeyDown={trapDialog}><header><div><small>百门计划 · 已获得 {fieldCount} / 100 个提问起点</small><h2 id="archive-heading">你的提问地图</h2><p>{latestProfile}</p></div><button className="quiet-close" type="button" onClick={() => setArchiveOpen(false)} aria-label="关闭档案">×</button></header><section className="archive-sector-progress" aria-label="各星域探索进度">{SECTORS.map((sector) => { const total = atlas.nodes.filter((node) => node.id !== "origin" && sectorFor(node) === sector.key).length; const lit = discovered.filter((node) => sectorFor(node) === sector.key).length; return <button type="button" key={sector.key} onClick={() => { setArchiveOpen(false); chooseSector(sector.key); }}><span>{sector.label}<small>{lit}/{total}</small></span><i><b style={{ width: `${total ? lit / total * 100 : 0}%`, background: sector.color }} /></i></button>; })}</section><div className="constellation-list">{uniqueVolumes.map((item, index) => <article className="volume-archive-card" key={item.id}><small translate="no">WORLD MODEL {String(index + 1).padStart(2,"0")}</small><h3>{item.name}</h3><p>{item.line}</p><span>{item.law}</span><button type="button" onClick={() => setVolumeReveal(item)}>打开这个世界模型</button></article>)}{uniqueConstellations.length ? uniqueConstellations.map((item, index) => <article key={item.id}><small translate="no">KNOWLEDGE FACE {String(index + 1).padStart(2,"0")}</small><h3>{item.name}</h3><p>{item.line}</p><span>{item.motif}</span><button type="button" onClick={() => setConstellationReveal(item)}>展开这张解释面</button></article>) : <p className="empty-archive">再完成 {observationsRemaining || 1} 次观测，三个问题会闭合成第一张解释面。</p>}</div><div className="specimen-index"><small>已经带走的提问起点</small>{discovered.map((node, index) => <button type="button" key={node.id} onClick={() => { setArchiveOpen(false); selectNode(node); }}><b>{String(index + 1).padStart(2,"0")}</b><span>{node.name}<small>{node.spark?.insight || node.hook}</small></span><i>{node.field}</i></button>)}</div><button className="reset-link" type="button" onClick={() => setResetOpen(true)}>重新装订这本档案</button></section> : null}
 
-      {constellationReveal ? <div className="overlay-scrim constellation-scrim"><section ref={constellationRef} className="constellation-reveal" role="dialog" aria-modal="true" aria-labelledby="constellation-title" onKeyDown={trapDialog}><div className="constellation-glyph" aria-hidden="true"><i /><i /><i /><b /><b /><b /></div><small>三次选择，在夜空中获得了同一个名字</small><h2 id="constellation-title">{constellationReveal.name}</h2><p>{constellationReveal.line}</p><div className="motif-stamp"><span>你的好奇心母题</span><b>{constellationReveal.motif}</b></div><div className="constellation-actions"><button type="button" onClick={() => copyConstellation(constellationReveal)}>复制我的星座签</button><button type="button" onClick={() => setConstellationReveal(null)}>把名字留在夜空</button></div></section></div> : null}
+      {constellationReveal ? <div className="overlay-scrim constellation-scrim"><section ref={constellationRef} className="constellation-reveal" role="dialog" aria-modal="true" aria-labelledby="constellation-title" onKeyDown={trapDialog}><div className="constellation-glyph" aria-hidden="true"><i /><i /><i /><b /><b /><b /></div><small>三次观测，闭合成一张新的解释面</small><h2 id="constellation-title">{constellationReveal.name}</h2><p>{constellationReveal.line}</p><div className="motif-stamp"><span>它们共同解释的问题</span><b>{constellationReveal.motif}</b></div><div className="constellation-actions"><button type="button" onClick={() => copyConstellation(constellationReveal)}>复制这张解释面</button><button type="button" onClick={() => setConstellationReveal(null)}>留在星图</button></div></section></div> : null}
 
-      {resetOpen ? <div className="overlay-scrim"><section ref={resetRef} className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="reset-title" onKeyDown={trapDialog}><h2 id="reset-title">重新装订整本档案？</h2><p>所有观测、知识页、星座和未走完的路都会消失。这个动作无法撤销。</p><div><button type="button" onClick={() => setResetOpen(false)}>保留我的星图</button><button type="button" onClick={resetAtlas}>确认重新开始</button></div></section></div> : null}
+      {volumeReveal ? <div className="overlay-scrim volume-scrim"><section ref={volumeRef} className="volume-reveal" role="dialog" aria-modal="true" aria-labelledby="volume-title" onKeyDown={trapDialog}><div className="volume-glyph" aria-hidden="true"><i /><i /><i /><i /><b /><b /><b /><b /></div><small>三张解释面互相支撑，世界模型涌现</small><h2 id="volume-title">{volumeReveal.name}</h2><p>{volumeReveal.line}</p><div className="volume-law"><span>现在你可以带走的思考工具</span><b>{volumeReveal.law}</b></div><div className="constellation-actions"><button type="button" onClick={() => copyVolume(volumeReveal)}>复制这个世界模型</button><button type="button" onClick={() => setVolumeReveal(null)}>放回知识宇宙</button></div></section></div> : null}
+
+      {resetOpen ? <div className="overlay-scrim"><section ref={resetRef} className="reset-dialog" role="alertdialog" aria-modal="true" aria-labelledby="reset-title" onKeyDown={trapDialog}><h2 id="reset-title">重新装订整本档案？</h2><p>所有观测、航线、解释面、世界模型和未走完的路都会消失。这个动作无法撤销。</p><div><button type="button" onClick={() => setResetOpen(false)}>保留我的星图</button><button type="button" onClick={resetAtlas}>确认重新开始</button></div></section></div> : null}
       {engine === "offline" ? <div className="offline-mark" role="status">AI世界引擎离线 · 检查 DashScope Key</div> : null}
       {toast ? <div className="archive-toast" role="status" aria-live="polite">{toast}</div> : null}
     </main>

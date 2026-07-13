@@ -42,12 +42,15 @@ test("keeps DashScope behind the server-side atlas API", async () => {
   assert.match(api, /mode === "encounter"/);
   assert.match(api, /mode === "resolve"/);
   assert.match(api, /mode === "constellation"/);
+  assert.match(api, /mode === "volume"/);
   assert.match(api, /mode === "chart"/);
   assert.match(api, /choice_visuals/);
   assert.match(api, /visual_context/);
   assert.match(api, /qwen3\.7-plus/);
   assert.match(game, /ObservationInstrument/);
   assert.match(game, /ChoiceHypothesisGraphic/);
+  assert.match(game, /KnowledgeVolume/);
+  assert.match(game, /knowledge-face/);
   assert.doesNotMatch(game, /DASHSCOPE_API_KEY|sk-[a-zA-Z0-9]/);
   assert.match(envExample, /DASHSCOPE_API_KEY=/);
   assert.doesNotMatch(envExample, /DASHSCOPE_API_KEY=sk-/);

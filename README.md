@@ -1,98 +1,56 @@
-# vinext-starter
+# Origin Star Map · 星火档案
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+一个 AI 原生的知识探索游戏：把陌生领域生成可交互的知识观测，让好奇心在星图中连成路径。
 
-## Prerequisites
+传统教育要求人先选择一个专业，再沿着它深入；星火档案尝试另一条路——先让玩家进入许多陌生世界，各获得一个能够继续提问的起点。AI 不只是回答问题，而是实时生成观测、判断反馈、知识解释和下一条跨领域航线。
 
-- Node.js `>=22.13.0`
+## 核心玩法
 
-## Quick Start
+- **点**：完成一次交互式观测，获得一个知识入口。
+- **边**：选择下一条航线，留下两个领域之间的真实联系。
+- **面**：每三次观测闭合成一张解释面，AI 提炼它们共同解释的问题。
+- **体**：每三张解释面生成一个世界模型，得到可以迁移到新问题的思考工具。
+
+星图会长期保存玩家探索过的领域、做过的判断、选择的路径以及逐渐涌现的知识结构。
+
+## 本地运行
+
+需要 Node.js `>=22.13.0` 和一个阿里云百炼 DashScope API Key。
 
 ```bash
 npm install
+Copy-Item .env.example .env
+npm run dev
+```
+
+在 `.env` 中配置：
+
+```env
+DASHSCOPE_API_KEY=your_key_here
+```
+
+然后访问 `http://localhost:3000`。
+
+密钥只由服务端 API 读取；`.env` 已加入 `.gitignore`，不要把真实 Key 提交到仓库。
+
+## 常用命令
+
+```bash
 npm run dev
 npm run build
+npm test
 ```
 
-This starter does not use `wrangler.jsonc`.
+## 技术栈
 
-## Included Shape
+- React + TypeScript
+- vinext / Vite
+- DashScope Qwen
+- SVG、CSS 动画与语义化知识可视化
+- LocalStorage 个人星图存档
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+## 产品理念
 
-## Workspace Auth Headers
+AI 可以回答几乎一切，但不能替人拥有问题。
 
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+当一个人对某个领域完全陌生时，他缺少的往往不只是答案，而是提出第一个好问题的能力。这个项目希望帮助玩家略知一二地走进一百个领域，在大脑里留下星星点点的知识萌芽，并让这些点逐渐连接成新的可能性。

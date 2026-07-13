@@ -8,7 +8,7 @@ type VisualContext = { measure: string; unit: string; baseline_label: string; ch
 
 type AtlasNode = { id?: string; name: string; field: string; hook: string; sector?: SectorKey };
 type AtlasRequest = {
-  mode?: "encounter" | "resolve" | "chart" | "constellation";
+  mode?: "encounter" | "resolve" | "chart" | "constellation" | "volume";
   node?: AtlasNode;
   map?: { discovered?: string[]; frontier?: string[]; fields?: string[] };
   answer?: string;
@@ -19,6 +19,7 @@ type AtlasRequest = {
   recent_nodes?: Array<{ name: string; field: string; spark?: string }>;
   profile_signals?: string[];
   existing_names?: string[];
+  faces?: Array<{ name: string; line: string; motif: string }>;
 };
 
 type EncounterState = {
@@ -309,20 +310,41 @@ export async function POST(request: Request) {
 
     if (body.mode === "constellation") {
       const recent = body.recent_nodes?.slice(-4) || [];
-      if (recent.length < 3) return NextResponse.json({ error: "还没有足够的观测来命名星座" }, { status: 400 });
+      if (recent.length < 3) return NextResponse.json({ error: "还没有足够的观测来闭合解释面" }, { status: 400 });
       const result = await callQwen(
         apiKey,
-        `你是《星火档案》的星座命名者。根据一个人最近走过的3至4个知识标本，发现其反复追逐的“问题形状”。
-- 名称应像真正的星座名：具体、含蓄、可记忆，不是人格测试，不使用“型/者/主义”。
-- 名称不得与已经出现的星座同名或仅有一字之差；优先从这一次独有的动作、物体或矛盾中取名。
-- line用第二人称指出这些看似无关的探索为何属于同一条好奇心；必须提到一项能从标本中看见的具体动作或矛盾，不能只堆抽象形容词。
+        `你是《星火档案》的知识结构编辑。根据一个人最近走过的3至4个知识标本，把它们闭合成一张“解释面”：三个不同领域共同解释的一类问题。
+- 名称必须具体、含蓄、可记忆，像一件可以拿在手里的认知工具，不是人格测试，不使用“型/者/主义”，不必生硬地以“面”结尾。
+- 名称不得与已经出现的解释面同名或仅有一字之差；优先从这一次独有的动作、物体或矛盾中取名。
+- line用第二人称指出这三个标本如何互相补足：至少点出两个具体对象或动作，不能只堆抽象形容词。
+- motif写它们共同帮助玩家追问的一个白话问题，不要只写“变化、秩序、关系”这种空词。
 - 描述提问习惯，不评判人格。禁用：AI、算法、机制、系统、深层、揭示、痴迷于、无主秩序、脆弱而坚韧、动态平衡。
-输出JSON：{"name":"4至9字，末尾可含星座","line":"18至38字","motif":"4至10字的好奇母题"}`,
-        `最近标本：${JSON.stringify(recent)}\n提问痕迹：${JSON.stringify(body.profile_signals?.slice(-6) || [])}\n已经使用过的名称（不得重复）：${JSON.stringify(body.existing_names?.slice(-20) || [])}`,
+输出JSON：{"name":"4至9字","line":"24至48字","motif":"8至18字的共同问题"}`,
+        `最近标本：${JSON.stringify(recent)}\n提问痕迹：${JSON.stringify(body.profile_signals?.slice(-6) || [])}\n已经使用过的解释面名称（不得重复）：${JSON.stringify(body.existing_names?.slice(-20) || [])}`,
         0.78,
       );
       if (!result.name || !result.line) throw new Error("Constellation incomplete");
-      return NextResponse.json({ name: String(result.name).slice(0, 20), line: String(result.line).slice(0, 60), motif: String(result.motif || "未命名的偏爱").slice(0, 24) });
+      return NextResponse.json({ name: String(result.name).slice(0, 20), line: String(result.line).slice(0, 80), motif: String(result.motif || "这些现象为什么会相互影响").slice(0, 36) });
+    }
+
+    if (body.mode === "volume") {
+      const faces = body.faces?.slice(-3) || [];
+      if (faces.length < 3) return NextResponse.json({ error: "还没有三张解释面来构成世界模型" }, { status: 400 });
+      const result = await callQwen(
+        apiKey,
+        `你是《星火档案》的世界模型编辑。玩家已经拥有三张跨领域解释面。现在找出一条能在三类问题之间迁移的规律，把它命名为一个“世界模型体”。
+- 这不是总结或人格标签。它必须是一件可以拿去分析新问题的思考工具。
+- name要具体、克制、可记忆，4至9字；可以像“反馈回路体”“尺度错位体”，但不要硬凑“体”字，也不要使用宏大科幻词。
+- line先用白话说清三张面如何互相支撑，至少提到两个解释面的具体对象或矛盾。
+- law必须能直接用于下一次观察，写成“遇到……，先问……，再看……”或同样清楚的动作句。不能只是格言。
+- 不声称无条件通用；如果适用有边界，在law中用“当……时”说清。
+- 禁用：赋能、重塑、深层、揭示、系统性、底层逻辑、万物、终极、涌现、范式、动态平衡。
+输出JSON：{"name":"4至9字","line":"30至60字","law":"30至58字的可执行迁移法则"}`,
+        `三张解释面：${JSON.stringify(faces)}\n已经使用过的世界模型名称（不得重复）：${JSON.stringify(body.existing_names?.slice(-20) || [])}`,
+        0.72,
+      );
+      if (!result.name || !result.line || !result.law) throw new Error("Volume incomplete");
+      return NextResponse.json({ name: String(result.name).slice(0, 20), line: String(result.line).slice(0, 100), law: String(result.law).slice(0, 100) });
     }
 
     if (body.mode === "chart") {
