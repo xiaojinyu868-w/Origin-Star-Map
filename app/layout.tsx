@@ -14,18 +14,18 @@ export async function generateMetadata(): Promise<Metadata> {
       default: "星火档案",
       template: "%s｜星火档案",
     },
-    description: "一款让你在知识宇宙中发现兴趣、提出问题的探索游戏。",
+    description: "AI即时生成隐藏规律。你有六次自由行动，通过实验破解一个从未存在过的世界。",
     openGraph: {
       title: "星火档案",
-      description: "探索你尚未发现的兴趣",
+      description: "AI此刻正在写下世界规律",
       type: "website",
-      images: [{ url: `${origin}/og.png`, width: 1672, height: 941, alt: "星火档案知识宇宙" }],
+      images: [{ url: `${origin}/og-v2.png`, width: 1672, height: 941, alt: "AI正在生成星火档案中的新世界" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "星火档案",
-      description: "探索你尚未发现的兴趣",
-      images: [`${origin}/og.png`],
+      description: "AI此刻正在写下世界规律",
+      images: [`${origin}/og-v2.png`],
     },
   };
 }

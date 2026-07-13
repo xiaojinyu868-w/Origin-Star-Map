@@ -2,9 +2,8 @@ import type { Metadata } from "next";
 import { CuriosityGame } from "./game";
 
 export const metadata: Metadata = {
-  title: "星火档案｜探索你尚未发现的兴趣",
-  description:
-    "驾驶火种号穿越知识宇宙，在谜题中点亮属于你的好奇心星图。",
+  title: "星火档案｜AI此刻正在写下世界规律",
+  description: "每颗星球都由AI即时生成。用六次自由实验，破解一条从未存在过的世界规律。",
 };
 
 export default function Home() {
