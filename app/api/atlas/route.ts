@@ -51,7 +51,7 @@ const decoder = new TextDecoder();
 const sectors: SectorKey[] = ["life", "mind", "society", "matter", "creation", "systems"];
 
 type ModelPurpose = "scene" | "knowledge";
-type ModelConfig = { apiKey: string; endpoint: string; model: string; jsonMode: boolean; maxTokens: number; timeoutMs: number };
+type ModelConfig = { apiKey: string; endpoint: string; model: string; jsonMode: boolean; dashScope: boolean; maxTokens: number; timeoutMs: number };
 
 function modelConfig(purpose: ModelPurpose): ModelConfig | null {
   const apiKey = process.env.AI_API_KEY || process.env.DASHSCOPE_API_KEY;
@@ -64,6 +64,7 @@ function modelConfig(purpose: ModelPurpose): ModelConfig | null {
     endpoint,
     model,
     jsonMode: process.env.AI_DISABLE_JSON_MODE !== "1",
+    dashScope: endpoint.includes("dashscope.aliyuncs.com"),
     maxTokens: Math.max(4096, Math.min(32000, Number(process.env.AI_MAX_OUTPUT_TOKENS) || 12000)),
     timeoutMs: Math.max(15000, Math.min(120000, Number(process.env.AI_TIMEOUT_MS) || 60000)),
   };
@@ -110,7 +111,7 @@ async function callModel(config: ModelConfig, system: string, user: string, temp
         model: config.model,
         messages: [{ role: "system", content: system }, { role: "user", content: user }],
         ...(config.jsonMode ? { response_format: { type: "json_object" } } : {}),
-        enable_thinking: false,
+        ...(config.dashScope ? { enable_thinking: false } : {}),
         max_tokens: config.maxTokens,
         temperature,
       }),
