@@ -499,19 +499,20 @@ export function CuriosityGame() {
   }
 
   async function launchEncounter(node: AtlasNode) {
+    if (engine !== "ready") { setToast("AI世界引擎尚未连接；检查密钥后再试一次"); return; }
     setSelectedId(node.id); setIntroOpen(false); clearObservation(); haptic(12);
-    if (engine !== "ready") { setStage("summary"); setToast("AI世界引擎尚未连接；检查密钥后再试一次"); return; }
     setWaitBeat(0); setStage("loading"); const requestId = ++requestSerial.current;
     try {
       const data = await atlasRequest({ mode: "encounter", node, map: mapContext() });
       if (requestId !== requestSerial.current) return;
       setEncounter(data as Encounter); setStage("observe"); haptic([8, 35, 8]);
-    } catch (error) { if (requestId !== requestSerial.current) return; setToast(error instanceof Error ? error.message : "观测没有成形，请再试一次"); setStage("summary"); }
+    } catch (error) { if (requestId !== requestSerial.current) return; setSelectedId(null); setStage("summary"); clearObservation(); setToast(error instanceof Error ? error.message : "观测没有成形，请再试一次"); }
   }
 
   function selectNode(node: AtlasNode) {
     requestSerial.current += 1;
-    if (node.status === "frontier") { launchEncounter(node); return; }
+    if (node.status === "origin") { if (recommended) launchEncounter(recommended); else setToast("先投下一个真实问题，让第一颗星诞生"); return; }
+    if (!node.knowledge) { launchEncounter(node); return; }
     setSelectedId(node.id); setStage("summary"); setIntroOpen(false); clearObservation(); haptic(8);
   }
 
@@ -528,14 +529,11 @@ export function CuriosityGame() {
 
   function lockRecommended() {
     if (!recommended) return;
-    chooseSector(sectorFor(recommended), recommended.id);
-    setToast(`航线已锁定：${recommended.name}`);
+    launchEncounter(recommended);
   }
 
   function focusNode(node: AtlasNode) {
-    if (activeSector === "all" && node.id !== "origin") { chooseSector(sectorFor(node), node.id); return; }
-    if (navigatorId === node.id || node.id === "origin") { selectNode(node); return; }
-    setNavigatorId(node.id); setInspectedId(node.id); haptic(7);
+    selectNode(node);
   }
 
   function moveFlight(direction: FlightDirection) {
@@ -548,7 +546,6 @@ export function CuriosityGame() {
 
   function activateFlightNode() {
     if (!flightNode) return;
-    if (activeSector === "all" && flightNode.id !== "origin") { chooseSector(sectorFor(flightNode), flightNode.id); return; }
     selectNode(flightNode);
   }
 
@@ -768,8 +765,6 @@ export function CuriosityGame() {
           <header><p><span translate="no">OBSERVATION {String(selectedNode.knowledge?.discoveredAt || atlas.expeditions + (stage === "reveal" ? 0 : 1)).padStart(3, "0")}</span><i /> {selectedNode.field}</p><button type="button" className="quiet-close" onClick={closeObservation} aria-label="关闭观测页">×</button></header>
 
           {stage === "summary" && selectedNode.knowledge ? <KnowledgeArticle record={selectedNode.knowledge} onRoute={chooseRoute} onReplay={() => launchEncounter(selectedNode)} /> : null}
-          {stage === "summary" && !selectedNode.knowledge ? <div className="sheet-summary"><small>{selectedNode.status === "origin" ? "天球中心" : "旧档案 · 只留下了一条结论"}</small><h2>{selectedNode.name}</h2><p>{selectedNode.spark?.insight || selectedNode.hook}</p>{selectedNode.status !== "origin" ? <><span className="legacy-note">再次观测后，这里会保存完整现场、白话解释、术语与事实边界。</span><button className="ink-action" type="button" onClick={() => launchEncounter(selectedNode)} disabled={engine !== "ready"}>补全这页知识档案</button></> : <button className="ink-action" type="button" onClick={closeObservation}>返回天球</button>}</div> : null}
-
           {stage === "loading" ? <div className="sheet-loading"><div className="scene-forge" aria-hidden="true"><i /><i /><i /><b /></div><small>AI 正在写这个世界</small><p>{WAIT_COPY.loading[waitBeat]}</p><span>代码、画面与规则同时生成</span></div> : null}
 
           {stage === "observe" && encounter ? <div className="sheet-observe">

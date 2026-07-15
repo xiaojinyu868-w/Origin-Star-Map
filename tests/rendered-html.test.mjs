@@ -64,6 +64,9 @@ test("keeps DashScope behind the server-side atlas API", async () => {
   assert.match(game, /media-src data: blob:/);
   assert.match(game, /sandbox="allow-scripts"/);
   assert.match(game, /receiveArtifactAction/);
+  assert.match(game, /if \(!node\.knowledge\) \{ launchEncounter\(node\)/);
+  assert.match(game, /function focusNode\(node: AtlasNode\) \{\s*selectNode\(node\);\s*\}/);
+  assert.doesNotMatch(game, /stage === "summary" && !selectedNode\.knowledge/);
   assert.doesNotMatch(game, /DASHSCOPE_API_KEY|sk-[a-zA-Z0-9]/);
   assert.match(envExample, /DASHSCOPE_API_KEY=/);
   assert.doesNotMatch(envExample, /DASHSCOPE_API_KEY=sk-/);

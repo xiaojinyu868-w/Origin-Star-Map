@@ -365,11 +365,6 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 1px 
 .observation-sheet > header { position: sticky; z-index: 4; top: 0; height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 11px 0 24px; border-bottom: 1px solid var(--rule); background: rgba(11,14,11,.97); backdrop-filter: blur(12px); }
 .observation-sheet > header p { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--ash); font-size: 12px; letter-spacing: .1em; }
 .observation-sheet > header p i { width: 22px; height: 1px; background: var(--rule-strong); }
-.sheet-summary { min-height: 560px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 66px 62px; }
-.sheet-summary > small { color: var(--vermilion); font-size: 10px; letter-spacing: .12em; }
-.sheet-summary h2 { max-width: 600px; margin: 15px 0 16px; color: var(--bone); font: 550 clamp(31px,4vw,45px)/1.35 var(--serif); text-wrap: balance; }
-.sheet-summary > p { max-width: 590px; margin: 0 0 24px; color: var(--ash); font: 400 16px/1.85 var(--serif); }
-.legacy-note { max-width: 520px; margin: 0 0 20px; color: var(--dim); font: 11px/1.7 var(--serif); }
 
 .sheet-loading { min-height: 590px; display: grid; place-content: center; justify-items: center; padding: 50px; text-align: center; }
 .scene-forge { position: relative; width: 150px; height: 150px; margin-bottom: 28px; perspective: 500px; transform-style: preserve-3d; animation: forge-turn 8s linear infinite; }
@@ -814,9 +809,6 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 1px 
   .observation-sheet { min-height: calc(100svh - 70px); border-width: 1px 0 0; }
   .observation-sheet > header { height: 52px; padding-left: 16px; }
   .observation-sheet > header p { font-size: 11px; }
-  .sheet-summary { min-height: calc(100svh - 123px); padding: 42px 23px; }
-  .sheet-summary h2 { font-size: 32px; }
-  .sheet-summary > p { font-size: 14px; }
   .sheet-loading { min-height: calc(100svh - 123px); padding: 36px 24px; }
   .sheet-observe, .sheet-reveal { padding: 18px 14px 30px; }
   .observation-prompt { grid-template-columns: 1fr; gap: 7px; margin-bottom: 12px; }
