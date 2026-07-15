@@ -33,12 +33,14 @@ type AtlasEdge = { from: string; to: string; kind: EdgeKind; reason?: string; tr
 type Constellation = { id: string; name: string; line: string; motif: string; nodeIds: string[] };
 type KnowledgeVolume = { id: string; name: string; line: string; law: string; faceIds: string[]; nodeIds: string[] };
 type AtlasState = { version: 7; nodes: AtlasNode[]; edges: AtlasEdge[]; profileSignals: string[]; expeditions: number; constellations: Constellation[]; volumes: KnowledgeVolume[]; trail: string[] };
-type Encounter = { signal: string; question: string; interaction: Interaction; choices: string[]; choice_visuals?: ChoiceVisual[]; visual_context?: VisualContext | null; scale: { left: string; right: string } | null; items: string[]; visual: "pulse" | "orbit" | "split" | "network" | "scale"; token: string };
+type GeneratedArtifact = { medium: "svg" | "html" | "canvas"; html: string; title: string; hint: string; can_commit: boolean };
+type Encounter = { signal: string; question: string; interaction: Interaction; choices: string[]; choice_visuals?: ChoiceVisual[]; visual_context?: VisualContext | null; scale: { left: string; right: string } | null; items: string[]; visual: "pulse" | "orbit" | "split" | "network" | "scale"; artifact?: GeneratedArtifact | null; token: string };
 type Resolution = { verdict: Verdict; echo: string; answer_title: string; scene: string; explanation: string; terms: Array<{ term: string; meaning: string }>; why_it_matters: string; transfer: string; spark: Spark; profile_signal: string; source_note: string; next_nodes: NextNode[]; player_answer: string };
 type PanelStage = "summary" | "loading" | "observe" | "resolving" | "reveal";
 type EngineState = "checking" | "ready" | "offline";
 type AtlasPosition = { x: number; y: number; sector: SectorKey };
 type FlightDirection = "up" | "down" | "left" | "right";
+type StructureLens = "all" | "point" | "line" | "face" | "volume";
 type FlightTrace = { from: string; to: string; serial: number };
 type FlightFeedback = { kind: "arrive" | "blocked"; serial: number };
 
@@ -53,7 +55,7 @@ const SECTORS: Array<{ key: SectorKey; label: string; angle: number; description
   { key: "matter", label: "物质", angle: 150, description: "从粒子、材料到宇宙尺度", color: "#91aab8" },
 ];
 const WAIT_COPY = {
-  loading: ["寻找一个能亲手判断的瞬间", "核对事实锚点与知识边界", "把现象折成一次短暂观测"],
+  loading: ["寻找一个能亲手判断的瞬间", "把现象写成可操作的代码世界", "核对事实锚点与知识边界"],
   resolving: ["读取你刚才留下的判断", "写下一条可以复述的答案", "为下一次远行生成三条航线"],
   charting: ["辨认这句话真正指向的问题", "在六片星域中寻找坐标", "寻找它与旧星之间的联系"],
 };
@@ -222,6 +224,19 @@ const FALLBACK_CHOICE_VISUALS: ChoiceVisual[] = [
 ];
 
 const CHOICE_COLORS = ["#c65740", "#b49768", "#7fa6a0"];
+const STRUCTURE_LENSES: Array<{ key: Exclude<StructureLens, "all">; label: string; dimension: string; ability: string }> = [
+  { key: "point", label: "点", dimension: "0D", ability: "我见过什么" },
+  { key: "line", label: "线", dimension: "1D", ability: "它为何相连" },
+  { key: "face", label: "面", dimension: "2D", ability: "共同解释什么" },
+  { key: "volume", label: "体", dimension: "3D", ability: "如何迁移出去" },
+];
+
+function atlasEdgeKey(edge: Pick<AtlasEdge, "from" | "to">) { return `${edge.from}->${edge.to}`; }
+function edgeMidpoint(edge: AtlasEdge, positions: Map<string, { x: number; y: number }>) {
+  const from = positions.get(edge.from); const to = positions.get(edge.to);
+  if (!from || !to) return null;
+  return { x: roundCoord((from.x + to.x) / 2), y: roundCoord((from.y + to.y) / 2) };
+}
 
 function plotY(value: number) { return 182 - Math.max(0, Math.min(100, value)) * 1.28; }
 
@@ -292,6 +307,33 @@ function ObservationInstrument({ encounter, scaleValue, arranged, selectedChoice
   </figure>;
 }
 
+function GeneratedWorld({ artifact, encounter, onCommit }: { artifact: GeneratedArtifact; encounter: Encounter; onCommit: (payload: Record<string, unknown>) => void }) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const commitRef = useRef(onCommit);
+  useEffect(() => { commitRef.current = onCommit; }, [onCommit]);
+  useEffect(() => {
+    function receiveArtifactAction(event: MessageEvent) {
+      if (event.source !== frameRef.current?.contentWindow || !event.data || typeof event.data !== "object") return;
+      const message = event.data as Record<string, unknown>;
+      if (message.source !== "spark-atlas-artifact" || message.type !== "commit") return;
+      if (encounter.interaction === "choice" && typeof message.answer === "string" && encounter.choices.includes(message.answer)) commitRef.current({ answer: message.answer });
+      else if (encounter.interaction === "scale" && Number.isFinite(Number(message.value))) commitRef.current({ value: Math.max(0, Math.min(100, Number(message.value))) });
+      else if (encounter.interaction === "arrange" && Array.isArray(message.order)) {
+        const order = message.order.slice(0, 3).map(String);
+        if (order.length === 3 && order.every((item) => encounter.items.includes(item))) commitRef.current({ order });
+      }
+    }
+    window.addEventListener("message", receiveArtifactAction);
+    return () => window.removeEventListener("message", receiveArtifactAction);
+  }, [encounter.choices, encounter.interaction, encounter.items]);
+  const srcDoc = useMemo(() => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; media-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none';"><style>:root{color-scheme:dark}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#080b08;color:#f2ebdc;font-family:Inter,'PingFang SC','Microsoft YaHei',sans-serif}button,input{font:inherit}button{color:inherit}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}</style></head><body>${artifact.html}</body></html>`, [artifact.html]);
+  return <figure className={`generated-world medium-${artifact.medium}`}>
+    <header><span><i aria-hidden="true" />AI 生成世界</span><b>{artifact.title}</b><small>{artifact.medium.toUpperCase()} · 本次实时生成</small></header>
+    <iframe ref={frameRef} title={`${artifact.title}互动知识可视化`} sandbox="allow-scripts" srcDoc={srcDoc} loading="eager" />
+    <figcaption><span>{artifact.hint}</span><small>{artifact.can_commit ? "完成世界里的操作即可提交判断；下方控制仍可备用。" : "先在世界里观察；再用下方通用控制留下判断。"}</small></figcaption>
+  </figure>;
+}
+
 function KnowledgeArticle({ record, onRoute, onReplay, live }: { record: KnowledgeRecord; onRoute: (route: NextNode) => void; onReplay: () => void; live?: boolean }) {
   const verdictCopy = record.verdict === "hit" ? { label: "命中", title: "你抓住了关键关系" } : record.verdict === "near" ? { label: "接近", title: "方向对了，还差一个变量" } : { label: "反转", title: "现实让直觉拐了个弯" };
   return <article className={`sheet-reveal ${live ? "live" : "memory"}`}>
@@ -334,6 +376,9 @@ export function CuriosityGame() {
   const [flightFeedback, setFlightFeedback] = useState<FlightFeedback>({ kind: "arrive", serial: 0 });
   const [waitBeat, setWaitBeat] = useState(0);
   const [questionOpen, setQuestionOpen] = useState(false);
+  const [structureLens, setStructureLens] = useState<StructureLens>("all");
+  const [inspectedEdgeKey, setInspectedEdgeKey] = useState<string | null>(null);
+  const [freshEdgeKey, setFreshEdgeKey] = useState<string | null>(null);
   const requestSerial = useRef(0);
   const flightSerial = useRef(0);
   const pointerStart = useRef<{ x: number; y: number } | null>(null);
@@ -364,6 +409,10 @@ export function CuriosityGame() {
   const uniqueVolumes = useMemo(() => dedupeVolumes(atlas.volumes), [atlas.volumes]);
   const traversedEdges = useMemo(() => atlas.edges.filter((edge) => edge.traversed).length, [atlas.edges]);
   const facesUntilVolume = 3 - uniqueConstellations.length % 3 || 3;
+  const faceProgress = constellationWaiting ? 3 : expeditionStep;
+  const volumeProgress = uniqueConstellations.length % 3;
+  const lensCounts: Record<Exclude<StructureLens, "all">, number> = { point: discovered.length, line: traversedEdges, face: uniqueConstellations.length, volume: uniqueVolumes.length };
+  const activeLens = STRUCTURE_LENSES.find((lens) => lens.key === structureLens) || null;
   const visibleNodes = useMemo(() => activeSector === "all" ? atlas.nodes : atlas.nodes.filter((node) => node.id !== "origin" && sectorFor(node) === activeSector), [activeSector, atlas.nodes]);
   const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
   const visibleNavigatorNode = navigatorId && visibleNodeIds.has(navigatorId) ? nodeById.get(navigatorId) || null : null;
@@ -399,6 +448,7 @@ export function CuriosityGame() {
   useEffect(() => { if (storageReady) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(atlas)); }, [atlas, storageReady]);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(""), 3000); return () => window.clearTimeout(timer); }, [toast]);
   useEffect(() => { if (!newNodeIds.length) return; const timer = window.setTimeout(() => setNewNodeIds([]), 2400); return () => window.clearTimeout(timer); }, [newNodeIds]);
+  useEffect(() => { if (!freshEdgeKey) return; const timer = window.setTimeout(() => setFreshEdgeKey(null), 3200); return () => window.clearTimeout(timer); }, [freshEdgeKey]);
   useEffect(() => { if (!charting && stage !== "loading" && stage !== "resolving") return; const timer = window.setInterval(() => setWaitBeat((beat) => (beat + 1) % 3), 1350); return () => window.clearInterval(timer); }, [charting, stage]);
   useEffect(() => {
     if (!overlayKey) return;
@@ -451,6 +501,13 @@ export function CuriosityGame() {
     setActiveSector(sector); setNavigatorId(targetId || null); setFlightTrace(null); setInspectedId(targetId || null); haptic(7);
   }
 
+  function chooseStructureLens(lens: StructureLens) {
+    setStructureLens(lens);
+    if (lens === "face" || lens === "volume") chooseSector("all");
+    if (lens !== "line") setInspectedEdgeKey(null);
+    haptic(6);
+  }
+
   function lockRecommended() {
     if (!recommended) return;
     chooseSector(sectorFor(recommended), recommended.id);
@@ -499,7 +556,7 @@ export function CuriosityGame() {
       const resolved = { ...(data as Omit<Resolution, "player_answer">), player_answer: playerAnswerFrom(payload) } as Resolution;
       const knowledge: KnowledgeRecord = { signal: encounter.signal, question: encounter.question, playerAnswer: playerAnswerFrom(payload), verdict: resolved.verdict, echo: resolved.echo, answerTitle: resolved.answer_title, scene: resolved.scene, explanation: resolved.explanation, terms: resolved.terms, whyItMatters: resolved.why_it_matters, transfer: resolved.transfer, sourceNote: resolved.source_note, nextNodes: resolved.next_nodes, discoveredAt: atlas.expeditions + 1 };
       setAtlas((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === selectedNode.id ? { ...node, status: "discovered" as const, spark: resolved.spark, knowledge } : node), profileSignals: [...current.profileSignals, resolved.profile_signal].slice(-12), expeditions: current.expeditions + 1, trail: [...current.trail, selectedNode.id].slice(-60) }));
-      setResolution(resolved); setStage("reveal"); haptic([10, 45, 18]);
+      setNewNodeIds([selectedNode.id]); setStructureLens("point"); setResolution(resolved); setStage("reveal"); haptic([10, 45, 18]);
     } catch (error) { if (requestId !== requestSerial.current) return; setToast(error instanceof Error ? error.message : "这页档案没有写完，请再试一次"); setStage("observe"); }
   }
 
@@ -522,7 +579,7 @@ export function CuriosityGame() {
         nodeIds: [...new Set(recentFaces.flatMap((face) => face.nodeIds))],
       };
       setAtlas((current) => current.volumes.some((item) => item.id === volume.id) ? current : { ...current, volumes: [...current.volumes, volume] });
-      setConstellationReveal(null); setVolumeReveal(volume); haptic([18, 45, 18, 45, 18, 70, 30]);
+      setStructureLens("volume"); setConstellationReveal(null); setVolumeReveal(volume); haptic([18, 45, 18, 45, 18, 70, 30]);
     } catch { setToast("三张解释面已经闭合；世界模型还在寻找最准确的名字"); }
   }
 
@@ -540,7 +597,7 @@ export function CuriosityGame() {
       if (uniqueConstellations.some((item) => item.name.replace(/\s/g, "") === name.replace(/\s/g, ""))) name = `${String(data.motif || "远近之间").slice(0, 8)}面`;
       const constellation: Constellation = { id: `constellation-${atlas.constellations.length + 1}`, name, line: data.line, motif: data.motif, nodeIds: faceNodes.map((node) => node.id) };
       const nextFaces = [...uniqueConstellations, constellation];
-      setAtlas((current) => current.constellations.some((item) => item.id === constellation.id) ? current : { ...current, constellations: [...current.constellations, constellation] }); setConstellationReveal(constellation); haptic([12, 50, 12, 50, 24]);
+      setAtlas((current) => current.constellations.some((item) => item.id === constellation.id) ? current : { ...current, constellations: [...current.constellations, constellation] }); setStructureLens("face"); setConstellationReveal(constellation); haptic([12, 50, 12, 50, 24]);
       await nameVolumeIfDue(nextFaces);
     } catch { setToast("这三个问题还没有闭合成解释面；下一条航线会再试一次"); }
   }
@@ -549,8 +606,9 @@ export function CuriosityGame() {
     if (!selectedNode) return;
     const existing = atlas.nodes.find((node) => node.name === route.name);
     const nextId = existing?.id || `route-${atlas.nodes.length}-${atlas.expeditions}-${route.kind}`;
+    const newEdgeKey = `${selectedNode.id}->${nextId}`;
     setAtlas((current) => ({ ...current, nodes: existing ? current.nodes : [...current.nodes, { id: nextId, name: route.name, field: route.field, hook: route.promise, status: "frontier", sector: route.sector || inferSector(route.field), connectionReason: route.connection_reason }], edges: current.edges.some((edge) => edge.from === selectedNode.id && edge.to === nextId) ? current.edges.map((edge) => edge.from === selectedNode.id && edge.to === nextId ? { ...edge, traversed: true } : edge) : [...current.edges, { from: selectedNode.id, to: nextId, kind: route.kind === "deeper" ? "normal" : route.kind, reason: route.connection_reason, traversed: true, createdAt: current.expeditions }] }));
-    setNewNodeIds([nextId]); setActiveSector(route.sector || inferSector(route.field)); setNavigatorId(nextId); closeObservation(); setToast(`新航线已写入：${route.connection_reason}`); await nameConstellationIfDue();
+    setNewNodeIds([nextId]); setFreshEdgeKey(newEdgeKey); setInspectedEdgeKey(newEdgeKey); setStructureLens("line"); setActiveSector(route.sector || inferSector(route.field)); setNavigatorId(nextId); closeObservation(); setToast(`一条新线出现：${route.connection_reason}`); await nameConstellationIfDue();
   }
 
   async function chartThought() {
@@ -575,7 +633,7 @@ export function CuriosityGame() {
     catch { setToast("暂时无法复制；请允许剪贴板权限后再试一次"); }
   }
 
-  function resetAtlas() { setAtlas(INITIAL_ATLAS); closeObservation(); setIntroOpen(true); setArchiveOpen(false); setResetOpen(false); setActiveSector("all"); setInspectedId(null); setNavigatorId(null); setFlightTrace(null); for (const key of [STORAGE_KEY, ...OLD_STORAGE_KEYS]) window.localStorage.removeItem(key); }
+  function resetAtlas() { setAtlas(INITIAL_ATLAS); closeObservation(); setIntroOpen(true); setArchiveOpen(false); setResetOpen(false); setActiveSector("all"); setStructureLens("all"); setInspectedId(null); setInspectedEdgeKey(null); setFreshEdgeKey(null); setNavigatorId(null); setFlightTrace(null); for (const key of [STORAGE_KEY, ...OLD_STORAGE_KEYS]) window.localStorage.removeItem(key); }
 
   useEffect(() => {
     function onFlightKey(event: KeyboardEvent) {
@@ -606,7 +664,7 @@ export function CuriosityGame() {
         <nav className="archive-tools" aria-label="档案工具"><button type="button" onClick={() => setIntroOpen(true)} aria-label="查看百门计划序言">为什么</button><button className="archive-button" type="button" onClick={() => setArchiveOpen(true)}>提问地图 <b>{fieldCount}</b></button></nav>
       </header>
 
-      <section id="star-chart" className={`chart-viewport ${activeSector === "all" ? "overview" : "sector-focus"} ${navigatorId ? "flight-active" : "flight-standby"} ${charting ? "is-charting" : ""}`} aria-label="个人知识天球图" aria-keyshortcuts="W A S D ArrowUp ArrowDown ArrowLeft ArrowRight Enter Escape" onPointerDown={handlePointerDown} onPointerUp={handlePointerUp}>
+      <section id="star-chart" className={`chart-viewport lens-${structureLens} ${activeSector === "all" ? "overview" : "sector-focus"} ${navigatorId ? "flight-active" : "flight-standby"} ${charting ? "is-charting" : ""}`} aria-label="个人知识天球图" aria-keyshortcuts="W A S D ArrowUp ArrowDown ArrowLeft ArrowRight Enter Escape" onPointerDown={handlePointerDown} onPointerUp={handlePointerUp}>
         <div className="paper-grain" aria-hidden="true" />
         <nav className="sky-index" aria-label="知识星域">
           <button className={activeSector === "all" ? "active" : ""} type="button" aria-pressed={activeSector === "all"} onClick={() => chooseSector("all")}>全图 <sup>{fieldCount}/100</sup></button>
@@ -614,6 +672,13 @@ export function CuriosityGame() {
         </nav>
 
         <div className="camera-crumb" aria-live="polite"><span>知识宇宙</span>{activeSectorInfo ? <><i>／</i><b>{activeSectorInfo.label}星域</b><button type="button" onClick={() => chooseSector("all")}>返回全图 <kbd>Esc</kbd></button></> : <b>六片星域</b>}</div>
+
+        <nav className="structure-lens" aria-label="点线面体结构透镜">
+          <header><small translate="no">STRUCTURE LENS</small><b>{activeLens ? activeLens.ability : "看见完整知识结构"}</b></header>
+          <button className={structureLens === "all" ? "active lens-all" : "lens-all"} type="button" aria-pressed={structureLens === "all"} onClick={() => chooseStructureLens("all")}><i aria-hidden="true" /><b>全结构</b><small>同时观察</small></button>
+          {STRUCTURE_LENSES.map((lens) => <button className={structureLens === lens.key ? `active lens-${lens.key}` : `lens-${lens.key}`} type="button" aria-pressed={structureLens === lens.key} key={lens.key} onClick={() => chooseStructureLens(lens.key)}><i aria-hidden="true" /><b>{lens.label}<em>{lens.dimension}</em></b><small>{lens.ability}</small><strong>{lensCounts[lens.key]}</strong></button>)}
+          <footer>完成观测成为点，作出选择拉出线；三个点闭合成面，三个面支撑成体。</footer>
+        </nav>
 
         <aside className="expedition-brief" aria-label="本轮探索目标">
           <header><small>第 {expeditionNumber} 次远征</small><span>{constellationWaiting ? "正在闭合" : `${expeditionStep} / 3`}</span></header>
@@ -628,26 +693,32 @@ export function CuriosityGame() {
 
           <svg className="chart-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             {activeSector === "all" ? uniqueConstellations.map((face) => { const geometry = faceGeometry(face, positions); if (!geometry) return null; return <polygon className="knowledge-face" key={face.id} points={geometry.points} vectorEffect="non-scaling-stroke" />; }) : null}
-            {atlas.edges.map((edge, index) => { const from = positions.get(edge.from); const to = positions.get(edge.to); if (!from || !to) return null; const adjacent = edge.from === flightNode?.id || edge.to === flightNode?.id; return <line key={`${edge.from}-${edge.to}-${index}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} className={`${edge.kind} ${edge.traversed ? "traversed" : "untraversed"} ${adjacent ? "adjacent" : ""}`} vectorEffect="non-scaling-stroke" />; })}
+            {atlas.edges.map((edge, index) => { const from = positions.get(edge.from); const to = positions.get(edge.to); if (!from || !to) return null; const key = atlasEdgeKey(edge); const adjacent = edge.from === flightNode?.id || edge.to === flightNode?.id; return <line key={`${key}-${index}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} className={`${edge.kind} ${edge.traversed ? "traversed" : "untraversed"} ${adjacent ? "adjacent" : ""} ${freshEdgeKey === key ? "structure-newborn" : ""} ${inspectedEdgeKey === key ? "structure-selected" : ""}`} vectorEffect="non-scaling-stroke" />; })}
             {traceFrom && traceTo && flightTrace ? <line key={flightTrace.serial} className="flight-trace" x1={traceFrom.x} y1={traceFrom.y} x2={traceTo.x} y2={traceTo.y} vectorEffect="non-scaling-stroke" /> : null}
           </svg>
 
-          {uniqueConstellations.map((constellation) => { const point = constellationPosition(constellation, positions); if (!point) return null; return <span className="constellation-mark" key={constellation.id} style={{ left: `${point.x}%`, top: `${point.y}%` }} aria-hidden="true"><i /></span>; })}
-          {activeSector === "all" ? uniqueVolumes.map((volume) => { const point = volumePosition(volume, positions); if (!point) return null; return <span className="knowledge-volume-mark" key={volume.id} style={{ left: `${point.x}%`, top: `${point.y}%` }} aria-hidden="true"><i /><i /><i /><b /></span>; }) : null}
+          {structureLens === "line" ? atlas.edges.filter((edge) => edge.traversed).map((edge) => { const point = edgeMidpoint(edge, positions); if (!point) return null; const key = atlasEdgeKey(edge); const fromNode = nodeById.get(edge.from); const toNode = nodeById.get(edge.to); const selected = inspectedEdgeKey === key; return <button className={`edge-marker ${selected ? "selected" : ""} ${freshEdgeKey === key ? "newborn" : ""} ${point.x > 58 ? "label-left" : ""} ${point.y > 62 ? "label-up" : ""}`} type="button" key={key} style={{ left: `${point.x}%`, top: `${point.y}%` }} onClick={(event) => { event.stopPropagation(); setInspectedEdgeKey(key); haptic(5); }} aria-label={`${fromNode?.name || "起点"}连接${toNode?.name || "下一点"}：${edge.reason || "由一次选择相连"}`}><i aria-hidden="true" /><span><small>{fromNode?.name || "起点"} → {toNode?.name || "下一点"}</small><b>{edge.reason || "由一次选择相连"}</b></span></button>; }) : null}
 
-          {visibleNodes.map((node) => { const position = positions.get(node.id); if (!position) return null; const guided = recommended?.id === node.id; const inspected = inspectedId === node.id; const navigated = flightNode?.id === node.id; const recent = recentIds.has(node.id); const labelVisible = inspected || newNodeIds.includes(node.id); const info = sectorInfo(sectorFor(node)); return <button key={node.id} type="button" className={`archive-star ${node.status} ${guided ? "guided" : ""} ${inspected ? "inspected" : ""} ${navigated ? "navigated" : ""} ${recent ? "recent" : ""} ${newNodeIds.includes(node.id) ? "newborn" : ""} ${labelVisible ? "show-label" : ""} ${position.x > 62 ? "label-left" : ""} ${position.y > 62 ? "label-up" : ""}`} style={{ left: `${position.x}%`, top: `${position.y}%`, "--star-color": info.color } as CSSProperties} onPointerEnter={() => setInspectedId(node.id)} onPointerLeave={() => setInspectedId(null)} onFocus={() => setInspectedId(node.id)} onBlur={() => setInspectedId(null)} onClick={(event) => { event.stopPropagation(); focusNode(node); }} aria-current={navigated ? "true" : undefined} aria-label={`${node.name}，${node.field}，${node.status === "discovered" ? "已归档" : node.status === "origin" ? "起点" : "尚未观测"}`}><span className="star-halo" aria-hidden="true" /><i aria-hidden="true" /><span className="archive-star-label"><small>{node.field}</small><b>{node.name}</b></span></button>; })}
+          {uniqueConstellations.map((constellation) => { const point = constellationPosition(constellation, positions); if (!point) return null; return <button className="constellation-mark" type="button" tabIndex={structureLens === "face" ? 0 : -1} key={constellation.id} style={{ left: `${point.x}%`, top: `${point.y}%` }} onClick={(event) => { event.stopPropagation(); setConstellationReveal(constellation); }} aria-label={`解释面：${constellation.name}`}><i aria-hidden="true" /><span>{constellation.name}</span></button>; })}
+          {activeSector === "all" ? uniqueVolumes.map((volume) => { const point = volumePosition(volume, positions); if (!point) return null; return <button className="knowledge-volume-mark" type="button" tabIndex={structureLens === "volume" ? 0 : -1} key={volume.id} style={{ left: `${point.x}%`, top: `${point.y}%` }} onClick={(event) => { event.stopPropagation(); setVolumeReveal(volume); }} aria-label={`世界模型：${volume.name}`}><i /><i /><i /><b /><span>{volume.name}</span></button>; }) : null}
+
+          {visibleNodes.map((node) => { const position = positions.get(node.id); if (!position) return null; const guided = recommended?.id === node.id; const inspected = inspectedId === node.id; const navigated = flightNode?.id === node.id; const recent = recentIds.has(node.id); const labelVisible = inspected || newNodeIds.includes(node.id); const info = sectorInfo(sectorFor(node)); const pointInteractive = structureLens === "all" || structureLens === "point"; return <button key={node.id} type="button" tabIndex={pointInteractive ? 0 : -1} className={`archive-star ${node.status} ${guided ? "guided" : ""} ${inspected ? "inspected" : ""} ${navigated ? "navigated" : ""} ${recent ? "recent" : ""} ${newNodeIds.includes(node.id) ? "newborn" : ""} ${labelVisible ? "show-label" : ""} ${position.x > 62 ? "label-left" : ""} ${position.y > 62 ? "label-up" : ""}`} style={{ left: `${position.x}%`, top: `${position.y}%`, "--star-color": info.color } as CSSProperties} onPointerEnter={() => pointInteractive && setInspectedId(node.id)} onPointerLeave={() => pointInteractive && setInspectedId(null)} onFocus={() => pointInteractive && setInspectedId(node.id)} onBlur={() => pointInteractive && setInspectedId(null)} onClick={(event) => { event.stopPropagation(); if (pointInteractive) focusNode(node); }} aria-current={navigated ? "true" : undefined} aria-label={`${node.name}，${node.field}，${node.status === "discovered" ? "已归档" : node.status === "origin" ? "起点" : "尚未观测"}`}><span className="star-halo" aria-hidden="true" /><i aria-hidden="true" /><span className="archive-star-label"><small>{node.field}</small><b>{node.name}</b></span></button>; })}
 
           {flightPosition ? <div key={flightFeedback.serial} className={`star-navigator ${flightFeedback.kind}`} style={{ left: `${flightPosition.x}%`, top: `${flightPosition.y}%` }} aria-hidden="true"><i className="navigator-orbit" /><i className="navigator-arrival" /><b /></div> : null}
         </div>
 
         <aside className="structure-index" aria-label="知识结构涌现进度">
-          <header><small>知识结构正在长大</small><b>{uniqueVolumes.length ? `${uniqueVolumes.length} 个模型` : "点 → 边 → 面 → 体"}</b></header>
-          <div className="dimension-ladder" aria-label="点边面体数量"><span><i>点</i><b>{discovered.length}</b><small>见过</small></span><span><i>边</i><b>{traversedEdges}</b><small>连接</small></span><span className={uniqueConstellations.length ? "emerged" : ""}><i>面</i><b>{uniqueConstellations.length}</b><small>解释</small></span><span className={uniqueVolumes.length ? "emerged" : ""}><i>体</i><b>{uniqueVolumes.length}</b><small>迁移</small></span></div>
-          <p className="next-emergence">{uniqueConstellations.length ? `再闭合 ${facesUntilVolume} 张解释面，新的世界模型出现` : `再完成 ${observationsRemaining || 1} 次观测，第一张解释面闭合`}</p>
+          <header><small translate="no">DIMENSION ENGINE</small><b>知识正在升维</b></header>
+          <div className="dimension-ladder" aria-label="点线面体数量">{STRUCTURE_LENSES.map((lens) => <button type="button" className={`${structureLens === lens.key ? "active" : ""} ${lensCounts[lens.key] ? "emerged" : ""}`} aria-pressed={structureLens === lens.key} onClick={() => chooseStructureLens(lens.key)} key={lens.key}><i>{lens.label}</i><b>{lensCounts[lens.key]}</b><small>{lens.dimension}</small></button>)}</div>
+          <div className="formation-progress" aria-label="升维进度">
+            <section><header><small>点 → 面</small><b>{faceProgress}/3</b></header><div>{[0,1,2].map((index) => <i className={index < faceProgress ? "filled" : ""} key={index} />)}</div></section>
+            <section><header><small>面 → 体</small><b>{volumeProgress}/3</b></header><div className="face-slots">{[0,1,2].map((index) => <i className={index < volumeProgress ? "filled" : ""} key={index} />)}</div></section>
+          </div>
+          <p className="next-emergence"><b>{constellationWaiting ? "下一次选择将闭合解释面" : uniqueConstellations.length ? `还差 ${facesUntilVolume} 张面形成世界模型` : `再完成 ${observationsRemaining || 1} 次观测形成第一张面`}</b><span>点不是收藏，线不是跳转；它们最终要长成可以迁移的理解。</span></p>
           {(uniqueVolumes.length || uniqueConstellations.length) ? <div className="structure-list">{uniqueVolumes.map((volume) => <button className="volume-row" type="button" key={volume.id} onClick={() => setVolumeReveal(volume)}><i aria-hidden="true" /><span><b>{volume.name}</b><small>可迁移的世界模型</small></span></button>)}{uniqueConstellations.slice().reverse().map((face) => <button className="face-row" type="button" key={face.id} onClick={() => setConstellationReveal(face)}><i aria-hidden="true" /><span><b>{face.name}</b><small>{face.motif}</small></span></button>)}</div> : null}
         </aside>
 
-        <div className="map-legend" aria-hidden="true"><span><i />已走过</span><span><i />可探索</span><span><i />跨领域航线</span><span><i />解释面</span></div>
+        <div className="map-legend" aria-live="polite"><strong>{activeLens ? `${activeLens.label} · ${activeLens.ability}` : "全结构 · 从观测到世界模型"}</strong><span><i />已走过</span><span><i />可探索</span><span><i />跨领域线</span><span><i />解释面</span></div>
 
         <aside className="flight-dock" aria-label="星图航行控制">
           <header><small>{activeSector === "all" ? "远景导航" : `${activeSectorInfo?.label}星域 · 局部航行`}</small><span className="desktop-hint">WASD / 方向键</span><button className="question-toggle" type="button" onClick={() => setQuestionOpen((open) => !open)}>{questionOpen ? "收起问题" : "投下问题"}</button></header>
@@ -677,8 +748,8 @@ export function CuriosityGame() {
           </div>
           <footer>你不必先学完三门课。只要知道这些门存在，就能带着更好的问题调用 AI。</footer>
         </section>
-        <div className="intro-principle"><span><b>100</b><small>种问世界的方法</small></span><p>不是囤积 100 篇答案。你负责好奇、判断和选择；AI 负责生成现场、讲清知识，并把你走过的路连成图。</p></div>
-        <ol aria-label="一次远征的三个步骤"><li><b>遇见</b><span>一个真实而反常的现象</span></li><li><b>判断</b><span>亲手选择、估计或排列一次</span></li><li><b>看见</b><span>自己反复追问的方向</span></li></ol>
+        <div className="intro-principle"><span><b>100</b><small>种问世界的方法</small></span><p>不是囤积 100 篇答案。AI 会为每个问题临时写出一个可操作的代码世界；你负责观察、判断和选择，让知识从点长成可以迁移的世界模型。</p></div>
+        <ol aria-label="知识从点生长为世界模型"><li><b>点</b><span>一次观测，获得一个能继续提问的入口</span></li><li><b>线</b><span>一次选择，说清两个世界为何相连</span></li><li><b>面</b><span>三个问题闭合，得到新的共同解释</span></li><li><b>体</b><span>三张解释面支撑出可迁移的思考工具</span></li></ol>
         <div className="intro-outcome"><small>玩完之后，你得到的不是“看过很多”</small><b>而是知道世界有哪些入口、自己对什么真正心动、下一步该往哪里走。</b></div>
         <div className="intro-footer"><button type="button" className="intro-start" onClick={() => { setIntroOpen(false); if (recommended) chooseSector(sectorFor(recommended), recommended.id); }}>去获得第 1 个提问起点</button><div className="intro-controls"><span><kbd>WASD</kbd> 航行</span><span><kbd>Enter</kbd> 观测</span><span>手机滑动选星</span></div></div>
       </section></div> : null}
@@ -695,8 +766,8 @@ export function CuriosityGame() {
           {stage === "observe" && encounter ? <div className="sheet-observe">
             <p className="observation-line">{encounter.signal}</p>
             <h2>{encounter.question}</h2>
-            <p className="observation-instruction">先让图形替你的直觉跑一次。这里不考记忆，只看你会押哪一种关系。</p>
-            <ObservationInstrument encounter={encounter} scaleValue={scaleValue} arranged={arranged} selectedChoice={hypothesisIndex} />
+            <p className="observation-instruction">先在这个由 AI 临时写出的世界里观察、拖动或比较。这里不考记忆，只看你会押哪一种关系。</p>
+            {encounter.artifact ? <GeneratedWorld artifact={encounter.artifact} encounter={encounter} onCommit={resolveObservation} /> : <ObservationInstrument encounter={encounter} scaleValue={scaleValue} arranged={arranged} selectedChoice={hypothesisIndex} />}
             {encounter.interaction === "choice" ? <div className="choice-console"><div className="observation-choices" role="group" aria-label="选择一条变化假设">{encounter.choices.map((choice, index) => <button className={hypothesisIndex === index ? "selected" : ""} aria-pressed={hypothesisIndex === index} key={choice} type="button" onClick={() => { setHypothesisIndex(index); haptic(6); }}><i className={`hypothesis-swatch swatch-${index + 1}`} aria-hidden="true" /><span><small>假设 0{index + 1}</small><b>{choice}</b></span></button>)}</div><button className="hypothesis-lock" type="button" disabled={hypothesisIndex === null} onClick={() => { if (hypothesisIndex !== null) resolveObservation({ answer: encounter.choices[hypothesisIndex] }); }}>{hypothesisIndex === null ? "先检视并选择一条轨迹" : `锁定 0${hypothesisIndex + 1} · ${encounter.choices[hypothesisIndex]}`}</button></div> : null}
             {encounter.interaction === "scale" && encounter.scale ? <div className="scale-observation"><input type="range" min="0" max="100" value={scaleValue} onChange={(event) => setScaleValue(Number(event.target.value))} aria-label={`在${encounter.scale.left}与${encounter.scale.right}之间估计`} /><div><span>{encounter.scale.left}</span><i style={{ left: `${scaleValue}%` }} /><b>{scaleValue}</b><span>{encounter.scale.right}</span></div><button type="button" onClick={() => resolveObservation({ value: scaleValue })}>把判断定在这里</button></div> : null}
             {encounter.interaction === "arrange" ? <div className="arrange-observation"><div className="arranged-slots">{[0,1,2].map((index) => arranged[index] ? <button type="button" key={index} onClick={() => pickArrangeItem(arranged[index])} aria-label={`移除第${index + 1}位：${arranged[index]}`}><small>0{index + 1}</small><span>{arranged[index]}</span></button> : <span key={index}><small>0{index + 1}</small><i>等待放入</i></span>)}</div><div className="arrange-items">{encounter.items.map((item) => <button key={item} type="button" className={arranged.includes(item) ? "used" : ""} disabled={arranged.includes(item)} onClick={() => pickArrangeItem(item)}>{item}</button>)}</div><button className="ink-action" type="button" disabled={arranged.length !== 3} onClick={() => resolveObservation({ order: arranged })}>按这个顺序归档</button></div> : null}

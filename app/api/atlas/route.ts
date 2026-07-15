@@ -5,6 +5,7 @@ type Verdict = "hit" | "near" | "twist";
 type Interaction = "choice" | "scale" | "arrange";
 type ChoiceVisual = { value: number; uncertainty: number; annotation: string };
 type VisualContext = { measure: string; unit: string; baseline_label: string; changed_label: string; baseline_value: number };
+type GeneratedArtifact = { medium: "svg" | "html" | "canvas"; html: string; title: string; hint: string; can_commit: boolean };
 
 type AtlasNode = { id?: string; name: string; field: string; hook: string; sector?: SectorKey };
 type AtlasRequest = {
@@ -88,6 +89,7 @@ async function callQwen(apiKey: string, system: string, user: string, temperatur
         messages: [{ role: "system", content: system }, { role: "user", content: user }],
         response_format: { type: "json_object" },
         enable_thinking: false,
+        max_tokens: 12000,
         temperature,
       }),
       signal: controller.signal,
@@ -98,6 +100,29 @@ async function callQwen(apiKey: string, system: string, user: string, temperatur
     if (typeof content !== "string") throw new Error("Missing output");
     return JSON.parse(content) as Record<string, unknown>;
   } finally { clearTimeout(timeout); }
+}
+
+function normalizeArtifact(result: Record<string, unknown>): GeneratedArtifact | null {
+  const raw = String(result.artifact_html || "").trim();
+  if (raw.length < 120 || raw.length > 26000 || !/<(?:svg|canvas|div|section|main)\b/i.test(raw)) return null;
+  const html = raw
+    .replace(/```(?:html|svg|javascript|js|css)?/gi, "")
+    .replace(/```/g, "")
+    .replace(/<script\b[^>]*\bsrc\s*=\s*["'][^"']+["'][^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<(?:iframe|object|embed|base|link|meta|form)\b[^>]*>/gi, "")
+    .replace(/<\/(?:iframe|object|embed|form)>/gi, "")
+    .replace(/\b(?:href|src)\s*=\s*["'](?:https?:|\/\/)[^"']*["']/gi, "")
+    .trim();
+  if (html.length < 120) return null;
+  const proposed = String(result.artifact_medium || "").toLowerCase();
+  const medium: GeneratedArtifact["medium"] = proposed === "canvas" || proposed === "html" || proposed === "svg" ? proposed : /<canvas\b/i.test(html) ? "canvas" : /<svg\b/i.test(html) ? "svg" : "html";
+  return {
+    medium,
+    html,
+    title: String(result.artifact_title || "为这次问题生成的可操作世界").slice(0, 36),
+    hint: String(result.artifact_hint || "先操作画面，再留下你的判断").slice(0, 80),
+    can_commit: html.includes("spark-atlas-artifact"),
+  };
 }
 
 function gradeEncounter(state: EncounterState, body: AtlasRequest): { verdict: Verdict; answer: string } {
@@ -151,6 +176,12 @@ export async function POST(request: Request) {
 - visual_context中的measure、baseline_label、changed_label也必须使用普通人一眼能懂的可见量，例如“两边次数有多接近”，不能使用“吻合度、效应强度、综合指数”这类没有直观含义的自造指标。
 - baseline_value与三个value都使用0至100的共享绘图刻度。请挑选baseline_value，使三种假设的相对高低都能看清。它们不是伪造的百分比；真实倍数、百分比或范围必须写进annotation。
 - uncertainty只表示选项本身声称的波动或不确定范围；没有范围含义时填0。三个value与annotation必须忠实对应三个choices，不能随机装饰。
+- 除了用于判定的结构化字段，还要为本题编写一个全新的“代码世界”。它不是装饰图，也不受固定图表类型限制：根据知识本身选择HTML、CSS、内联SVG或Canvas，可以表现轨道、流体、生态网络、机械结构、声音、空间、尺度、群体运动、历史过程或任何更合适的形式。
+- artifact_html是可直接插入body的自包含代码片段。它必须在宽度720、高度320左右的区域内自适应，直接帮助玩家观察本题现象；允许使用内联style和少量原生JavaScript来提供拖动、点击、悬停、滑杆或时间演化。
+- 不要套用“折线图/三个卡片/圆点连线”的固定模板，也不要为了炫技堆粒子。先问：这个知识如果真的能动起来，玩家最该亲手改变哪个变量、看到哪个因果？
+- 代码内只用HTML、CSS、SVG、Canvas和原生JavaScript；禁止外链、fetch、WebSocket、localStorage、eval、表单、iframe、音视频、第三方库和无限循环。requestAnimationFrame必须有轻量更新，事件监听不超过8个。
+- artifact_html不包含html、head、body标签，不使用Markdown代码围栏。中文标注不得小于14px，关键对象必须有可见名称；不能提前泄露正确答案，只展示可供判断的证据或三种假设。
+- 代码世界可以用任何交互过程，但完成判断时必须通过安全桥提交结果：choice发送window.parent.postMessage({source:'spark-atlas-artifact',type:'commit',answer:'必须与choices某一项完全相同'},'*')；scale发送同结构并把answer改为value:0至100；arrange发送order数组，元素必须来自items。artifact_html必须包含精确字符串spark-atlas-artifact；提交前必须让玩家主动操作，不能加载后自动发送。
 - 必须来自可重复实验、稳定规律或明确机制，并保留事实锚点与边界。
 - 不把相关写成因果，不把假说写成定论；有争议就换一个更可靠的现象。
 - 禁用模型腔与宣传腔：显著、赋能、重塑、深层、揭示、背后逻辑、系统性、颠覆、神奇、竟然。
@@ -169,6 +200,10 @@ export async function POST(request: Request) {
   "items":["仅arrange填写3项，每项3至10字"],
   "target_order":["仅arrange填写真实顺序"],
   "visual":"pulse、orbit、split、network、scale五选一",
+  "artifact_medium":"svg、html或canvas",
+  "artifact_title":"6至18字，说明这个可操作世界是什么",
+  "artifact_hint":"12至32字，告诉玩家可以怎样操作或观察",
+  "artifact_html":"自包含的HTML/CSS/SVG/Canvas代码片段，必须JSON转义",
   "concept":"真实概念",
   "explanation":"35至65字，准确解释结果",
   "source_anchor":"实验、效应或规律名称",
@@ -204,6 +239,7 @@ export async function POST(request: Request) {
       const targetOrder = Array.isArray(result.target_order) ? result.target_order.slice(0, 3).map((item) => String(item).slice(0, 14)) : [];
       const validMechanic = interaction === "choice" ? choices.length === 3 && ["hit", "near", "twist"].every((grade) => verdicts.includes(grade)) : interaction === "scale" ? Boolean(scale) : items.length === 3 && targetOrder.length === 3;
       if (!result.signal || !result.question || !result.concept || !result.explanation || !result.source_anchor || !result.caveat || !validMechanic) throw new Error("Encounter incomplete");
+      const artifact = normalizeArtifact(result);
 
       const state: EncounterState = {
         node: body.node,
@@ -224,7 +260,7 @@ export async function POST(request: Request) {
         caveat: String(result.caveat),
         map_fields: mapFields,
       };
-      return NextResponse.json({ signal: state.signal, question: state.question, interaction: state.interaction, choices: state.choices, choice_visuals: state.choice_visuals, visual_context: state.visual_context, scale: state.scale ? { left: state.scale.left, right: state.scale.right } : null, items: state.items, visual: state.visual, token: await seal(state, apiKey) });
+      return NextResponse.json({ signal: state.signal, question: state.question, interaction: state.interaction, choices: state.choices, choice_visuals: state.choice_visuals, visual_context: state.visual_context, scale: state.scale ? { left: state.scale.left, right: state.scale.right } : null, items: state.items, visual: state.visual, artifact, token: await seal(state, apiKey) });
     }
 
     if (body.mode === "resolve") {

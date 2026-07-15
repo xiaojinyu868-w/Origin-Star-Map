@@ -16,17 +16,17 @@ export async function generateMetadata(): Promise<Metadata> {
       default: "星火档案｜未完成问题的天球图",
       template: "%s｜星火档案",
     },
-    description: "AI能回答问题，但不能替你拥有问题。探索100个领域，各带走一个提问起点，让AI把知识连成你的个人星图。",
+    description: "AI为每个陌生问题实时写出可操作的代码世界。探索100个领域，让知识从点、线、面生长成可以迁移的世界模型。",
     openGraph: {
       title: "星火档案｜未完成问题的天球图",
-      description: "AI能回答问题，但不能替你拥有问题。探索100个领域，建立自己的提问地图。",
+      description: "AI实时生成可操作的知识世界；探索100个领域，让点、线、面生长成你的世界模型。",
       type: "website",
       images: [{ url: `${origin}/og-v3.png`, width: 1536, height: 1024, alt: "星火档案个人知识宇宙" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "星火档案｜未完成问题的天球图",
-      description: "AI能回答问题，但不能替你拥有问题。探索100个领域，建立自己的提问地图。",
+      description: "AI实时生成可操作的知识世界；探索100个领域，让点、线、面生长成你的世界模型。",
       images: [`${origin}/og-v3.png`],
     },
   };
