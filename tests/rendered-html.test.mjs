@@ -32,9 +32,10 @@ test("server-renders the personal knowledge atlas", async () => {
 });
 
 test("keeps DashScope behind the server-side atlas API", async () => {
-  const [api, game, envExample] = await Promise.all([
+  const [api, game, flight, envExample] = await Promise.all([
     readFile(new URL("../app/api/atlas/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/game.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/space-flight.tsx", import.meta.url), "utf8"),
     readFile(new URL("../.env.example", import.meta.url), "utf8"),
   ]);
 
@@ -64,9 +65,15 @@ test("keeps DashScope behind the server-side atlas API", async () => {
   assert.match(game, /media-src data: blob:/);
   assert.match(game, /sandbox="allow-scripts"/);
   assert.match(game, /receiveArtifactAction/);
-  assert.match(game, /if \(!node\.knowledge\) \{ launchEncounter\(node\)/);
-  assert.match(game, /function focusNode\(node: AtlasNode\) \{\s*selectNode\(node\);\s*\}/);
+  assert.match(game, /function primeEncounter\(node: AtlasNode\)/);
+  assert.match(game, /function beginVoyage\(node: AtlasNode\)/);
+  assert.match(game, /function focusNode\(node: AtlasNode\) \{\s*beginVoyage\(node\);\s*\}/);
+  assert.match(game, /<SpaceFlight/);
+  assert.match(flight, /requestAnimationFrame\(tick\)/);
+  assert.match(flight, /\["w", "a", "s", "d"/);
+  assert.match(flight, /SparkRuntime|scanStartedAt/);
   assert.doesNotMatch(game, /stage === "summary" && !selectedNode\.knowledge/);
+  assert.doesNotMatch(game, /AI 正在写这个世界/);
   assert.doesNotMatch(game, /DASHSCOPE_API_KEY|sk-[a-zA-Z0-9]/);
   assert.match(envExample, /DASHSCOPE_API_KEY=/);
   assert.doesNotMatch(envExample, /DASHSCOPE_API_KEY=sk-/);

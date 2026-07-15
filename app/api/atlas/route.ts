@@ -23,6 +23,7 @@ type AtlasRequest = {
   profile_signals?: string[];
   existing_names?: string[];
   faces?: Array<{ name: string; line: string; motif: string }>;
+  flight?: { signal?: number; samples?: number; probes?: number };
 };
 
 type EncounterState = {
@@ -150,7 +151,7 @@ function normalizeArtifact(result: Record<string, unknown>): GeneratedArtifact |
     duration_seconds: Math.max(8, Math.min(90, Number(result.artifact_duration_seconds) || 30)),
     accent: /^#[0-9a-f]{6}$/i.test(rawAccent) ? rawAccent : "#7fa6a0",
     focus: String(result.artifact_focus || "").slice(0, 10),
-    can_commit: html.includes("SparkRuntime.commit") || html.includes("spark-atlas-artifact"),
+    can_commit: /(?:window\.)?SparkRuntime\s*(?:\?\.|\.)\s*commit\s*\(/.test(html) || html.includes("spark-atlas-artifact"),
   };
 }
 
@@ -165,30 +166,33 @@ function sceneIsPlayable(artifact: GeneratedArtifact | null) {
 function focusMatchesNode(result: Record<string, unknown>, node: AtlasNode) {
   const focus = String(result.artifact_focus || "").trim();
   if (focus.length < 2 || focus.length > 10 || /^(两个|两列|相近|忽大|忽小|忽大忽小|越大|越省|翻倍|怎样|为何|为什么|制造|听见|估量|改变|调节|控制|选择|移动|拖动|观察|变化|关系|结果|影响|世界|现象|过程|系统)$/.test(focus)) return false;
-  const source = `${node.name} ${node.hook}`;
+  const source = `${node.name} ${node.field} ${node.hook}`;
   return source.includes(focus);
+}
+
+function requiredFocus(node: AtlasNode) {
+  return node.field.replace(/[\s，。！？、·/]+/g, "").slice(0, 10) || node.name.replace(/[\s，。！？、·/]+/g, "").slice(0, 10);
 }
 
 function sceneMatchesNode(result: Record<string, unknown>, node: AtlasNode, artifact: GeneratedArtifact | null) {
   if (!focusMatchesNode(result, node)) return false;
   const focus = String(result.artifact_focus || "").trim();
-  const prompt = `${String(result.signal || "")} ${String(result.question || "")}`;
   const scene = `${artifact?.title || ""} ${artifact?.html || ""}`;
-  return prompt.includes(focus) && scene.includes(focus);
+  return scene.includes(focus);
 }
 
-async function createBlueprint(config: ModelConfig, node: AtlasNode, mapFields: string[], correction = "") {
+async function createBlueprint(config: ModelConfig, node: AtlasNode, mapFields: string[], focus: string) {
   return callModel(
     config,
     `你是知识游戏的事实设计师。先只设计一次可靠、有动作的观测蓝图，不写任何前端代码。
 - 唯一主题是档案hook承诺的现象，结束后必须能直接回答它；不得换成同学科的相邻知识。
 - 面向第一次接触该领域的高中毕业生。signal只给一个可想象现场；question要求玩家改变一个变量或完成一个动作，不考术语。
 - interaction固定为world。设计三个由玩家真实操作导致的结果，id固定o1、o2、o3，verdict恰好使用hit、near、twist各一次。
-- artifact_focus必须从name或hook原样复制一个2至10字的领域名词。禁用：两个、两列、相近、忽大忽小、越大、越省、翻倍、制造、听见、估量、改变、调节、控制、选择、移动、拖动、观察、变化、关系、结果、影响、世界、现象、过程、系统。
+  - artifact_focus固定为“${focus}”，必须逐字复制。
 - 事实必须可靠；concept与explanation说明正确关系，source_anchor给出可核对的规律、实验或效应，caveat说明边界。
 输出JSON：{"signal":"22至42字","question":"10至24字的动作问题","interaction":"world","world_outcomes":[{"id":"o1","label":"5至16字的具体行动结果","verdict":"hit"}],"artifact_focus":"具体领域名词","concept":"真实概念","explanation":"35至65字","source_anchor":"事实锚点","caveat":"12至30字"}`,
-    `唯一主题档案：${JSON.stringify(node)}\n已经走过的领域：${JSON.stringify(mapFields)}${correction ? `\n上次错误：${correction}。这次必须改正。` : ""}`,
-    correction ? 0.35 : 0.55,
+    `唯一主题档案：${JSON.stringify(node)}\n已经走过的领域：${JSON.stringify(mapFields)}\n锁定知识锚点：${focus}`,
+    0.48,
   );
 }
 
@@ -228,10 +232,9 @@ export async function POST(request: Request) {
     if (body.mode === "encounter") {
       if (!body.node?.name || !body.node.field || !body.node.hook) return NextResponse.json({ error: "观测坐标不完整" }, { status: 400 });
       const mapFields = body.map?.fields?.slice(0, 24) || [];
-      let blueprint = await createBlueprint(knowledgeModel, body.node, mapFields);
-      if (!focusMatchesNode(blueprint, body.node)) blueprint = await createBlueprint(knowledgeModel, body.node, mapFields, "artifact_focus不是档案里的具体领域名词");
-      if (!blueprint.signal || !blueprint.question || !blueprint.concept || !blueprint.explanation || !blueprint.source_anchor || !blueprint.caveat || !Array.isArray(blueprint.world_outcomes) || !focusMatchesNode(blueprint, body.node)) throw new Error("Blueprint incomplete");
-      let generated = await callModel(
+      const lockedFocus = requiredFocus(body.node);
+      const blueprintPromise = createBlueprint(knowledgeModel, body.node, mapFields, lockedFocus);
+      const generatedPromise = callModel(
         sceneModel,
         `你是《星火档案》的无名策展人。这里不是课堂、问答产品或科幻控制台，而是一座安静的夜间天文档案馆。你要从真实知识中挑出一个值得亲手触碰的瞬间。
 
@@ -293,10 +296,19 @@ export async function POST(request: Request) {
   "source_anchor":"实验、效应或规律名称",
   "caveat":"12至30字，说明不能推出什么"
 }`,
-        `唯一允许的主题档案：${JSON.stringify(body.node)}\n权威观测蓝图（所有同名字段必须逐字复制，不得改题）：${JSON.stringify(blueprint)}\n已经走过的领域：${JSON.stringify(mapFields)}\n硬约束：不得换题。代码世界必须让玩家亲手检验蓝图与hook承诺的同一个现象。`,
+        `唯一允许的主题档案：${JSON.stringify(body.node)}\n锁定知识锚点：${lockedFocus}。artifact_focus必须逐字复制为这个词，代码世界可见内容也必须出现它。\n已经走过的领域：${JSON.stringify(mapFields)}\n硬约束：不得换题。代码世界必须让玩家亲手检验hook承诺的同一个现象。`,
         0.76,
       );
-      const draft = { ...generated, ...blueprint, interaction: "world" };
+      let [blueprint, generated] = await Promise.all([blueprintPromise, generatedPromise]);
+      blueprint = { ...blueprint, artifact_focus: lockedFocus };
+      generated = { ...generated, artifact_focus: lockedFocus };
+      if (!String(generated.artifact_html || "").includes(lockedFocus)) {
+        const safeFocus = lockedFocus.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[character] || character));
+        generated.artifact_html = `<div style="position:absolute;z-index:999;left:14px;top:12px;padding:5px 8px;border:1px solid rgba(255,255,255,.18);background:rgba(3,6,5,.72);color:#e8dfcc;font:600 14px/1.2 sans-serif;letter-spacing:.08em;pointer-events:none">${safeFocus}</div>${String(generated.artifact_html || "")}`;
+      }
+      if (!blueprint.signal || !blueprint.question || !blueprint.concept || !blueprint.explanation || !blueprint.source_anchor || !blueprint.caveat || !Array.isArray(blueprint.world_outcomes) || !focusMatchesNode(blueprint, body.node)) throw new Error("Blueprint incomplete");
+      const factualCore = { concept: blueprint.concept, explanation: blueprint.explanation, source_anchor: blueprint.source_anchor, caveat: blueprint.caveat, artifact_focus: lockedFocus };
+      const draft = { ...generated, ...factualCore, interaction: "world" };
       const draftArtifact = normalizeArtifact(draft);
       if (!draftArtifact?.can_commit || !sceneMatchesNode(draft, body.node, draftArtifact)) {
         const repaired = await callModel(
@@ -312,7 +324,7 @@ export async function POST(request: Request) {
         );
         generated = { ...generated, ...repaired };
       }
-      const result = { ...generated, ...blueprint, interaction: "world" };
+      const result = { ...generated, ...factualCore, interaction: "world" };
 
       const interaction = ["world", "choice", "scale", "arrange"].includes(String(result.interaction)) ? String(result.interaction) as Interaction : "world";
       const rawOutcomes = Array.isArray(result.world_outcomes) ? result.world_outcomes.slice(0, 3) : [];
@@ -381,6 +393,8 @@ export async function POST(request: Request) {
       const state = await unseal(body.token, sceneModel.apiKey);
       if (!state) return NextResponse.json({ error: "这次观测已经褪色" }, { status: 400 });
       const graded = gradeEncounter(state, body);
+      const flight = { signal: Math.max(0, Math.min(100, Number(body.flight?.signal) || 0)), samples: Math.max(0, Math.min(4, Number(body.flight?.samples) || 0)), probes: Math.max(0, Math.min(20, Number(body.flight?.probes) || 0)) };
+      const flightStyle = flight.samples >= 3 ? "主动偏航采样：wild航线应更大胆地跨到远领域" : flight.probes >= 2 ? "远距探测：bridge航线应从相邻可见现象建立连接" : "直达航行：deeper航线应提供最容易继续追问的台阶";
       const result = await callModel(
         knowledgeModel,
         `你是《星火档案》的知识编辑。根据固定判定完成一页让陌生人真正学会东西的微型百科。
@@ -393,6 +407,8 @@ export async function POST(request: Request) {
 事实锚点：${state.source_anchor}
 边界：${state.caveat}
 已经走过的领域：${JSON.stringify(state.map_fields)}
+本次飞行记录：信号${flight.signal}/100，捕获${flight.samples}/4个样本，发射${flight.probes}枚探针。
+航行风格：${flightStyle}
 
 知识编辑纪律：
 - 假设读者是聪明但对该领域一无所知的高中毕业生。任何人名、制度、实验、年代或术语第一次出现时都要顺手解释，不能靠读者预习。
@@ -407,6 +423,7 @@ export async function POST(request: Request) {
 - 不把基因、分子、城市或算法写成人，不说它们“选择、渴望、谈判、记住”了什么。
 - 禁用文案腔：身份即被铸入、抽象天赋、资产总和、显著、赋能、重塑、深层、揭示、机制、背后、系统性、颠覆、神奇、竟然、无声的契约、完成复制。
 - 生成3条去向：deeper留在当前问题；bridge换一个熟悉角度；wild跳到遥远领域。bridge与wild必须优先选择“已经走过的领域”之外的学科，并且彼此也不能属于同一领域；目标是帮助玩家逐渐点亮100个不同领域，而不是在少数主题里打转。
+- 飞行记录不能改变事实或固定判定，只用来决定三条航线的跨度与切入角度。flight_note用一句话明确告诉玩家，他的驾驶方式怎样影响了下一跳。
 - name必须写成普通人一眼能懂、想点开的具体问题，优先使用“为什么/怎样/如果”；不能只丢出“百夫队投票权重”式名词。
 - promise用一句白话说明点进去会看见什么。如果name不可避免地含有生词，promise必须当场解释这个词。
 
@@ -421,6 +438,7 @@ export async function POST(request: Request) {
   "transfer":"28至60字，以‘这也能解释’或具体追问开头的日常迁移例子",
   "spark":{"title":"4至10字","field":"真实领域","insight":"18至38字，读者可以复述的白话结论"},
   "profile_signal":"10至22字，描述玩家反复偏爱的提问角度",
+  "flight_note":"14至32字，说明本次驾驶怎样改变下一批航线",
   "next_nodes":[
     {"name":"8至18字的具体问题","field":"领域","sector":"六类之一","promise":"12至26字","kind":"deeper","connection_reason":"10至22字"},
     {"name":"8至18字的具体问题","field":"领域","sector":"六类之一","promise":"12至26字","kind":"bridge","connection_reason":"10至22字"},
@@ -448,6 +466,7 @@ export async function POST(request: Request) {
         transfer: String(result.transfer).slice(0, 110),
         spark: { title: String(spark.title).slice(0, 24), field: String(spark.field || state.node.field).slice(0, 30), insight: String(spark.insight).slice(0, 48) },
         profile_signal: String(result.profile_signal || "喜欢从微小差异追踪变化").slice(0, 50),
+        flight_note: String(result.flight_note || (flight.samples >= 3 ? "你捕获了更多样本，远行航线因此跨得更远。" : "你选择直达，下一跳会先从当前问题继续深挖。")).slice(0, 60),
         source_note: `${state.source_anchor} · ${state.caveat}`.slice(0, 90),
         next_nodes: nextNodes.map((item, index) => {
           const node = item as Record<string, unknown>;

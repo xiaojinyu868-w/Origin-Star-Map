@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { SpaceFlight, type FlightTelemetry, type VoyagePhase } from "./space-flight";
 
 type NodeStatus = "origin" | "frontier" | "discovered";
 type EdgeKind = "normal" | "bridge" | "wild";
@@ -24,6 +25,7 @@ type KnowledgeRecord = {
   terms: Array<{ term: string; meaning: string }>;
   whyItMatters: string;
   transfer?: string;
+  flightNote?: string;
   sourceNote: string;
   nextNodes: NextNode[];
   discoveredAt: number;
@@ -36,14 +38,11 @@ type AtlasState = { version: 7; nodes: AtlasNode[]; edges: AtlasEdge[]; profileS
 type GeneratedArtifact = { medium: string; html: string; title: string; hint: string; verb: string; duration_seconds: number; accent: string; focus: string; can_commit: boolean };
 type EncounterOutcome = { id: string; label: string };
 type Encounter = { signal: string; question: string; interaction: Interaction; outcomes: EncounterOutcome[]; choices: string[]; choice_visuals?: ChoiceVisual[]; visual_context?: VisualContext | null; scale: { left: string; right: string } | null; items: string[]; visual: "pulse" | "orbit" | "split" | "network" | "scale"; artifact?: GeneratedArtifact | null; token: string };
-type Resolution = { verdict: Verdict; echo: string; answer_title: string; scene: string; explanation: string; terms: Array<{ term: string; meaning: string }>; why_it_matters: string; transfer: string; spark: Spark; profile_signal: string; source_note: string; next_nodes: NextNode[]; player_answer: string };
-type PanelStage = "summary" | "loading" | "observe" | "resolving" | "reveal";
+type Resolution = { verdict: Verdict; echo: string; answer_title: string; scene: string; explanation: string; terms: Array<{ term: string; meaning: string }>; why_it_matters: string; transfer: string; flight_note: string; spark: Spark; profile_signal: string; source_note: string; next_nodes: NextNode[]; player_answer: string };
+type PanelStage = "summary" | "observe" | "resolving" | "reveal";
 type EngineState = "checking" | "ready" | "offline";
 type AtlasPosition = { x: number; y: number; sector: SectorKey };
-type FlightDirection = "up" | "down" | "left" | "right";
 type StructureLens = "all" | "point" | "line" | "face" | "volume";
-type FlightTrace = { from: string; to: string; serial: number };
-type FlightFeedback = { kind: "arrive" | "blocked"; serial: number };
 
 const STORAGE_KEY = "spark-atlas-v7";
 const OLD_STORAGE_KEYS = ["spark-atlas-v6", "spark-atlas-v5", "spark-atlas-v4", "spark-atlas-v3"];
@@ -56,7 +55,6 @@ const SECTORS: Array<{ key: SectorKey; label: string; angle: number; description
   { key: "matter", label: "物质", angle: 150, description: "从粒子、材料到宇宙尺度", color: "#91aab8" },
 ];
 const WAIT_COPY = {
-  loading: ["寻找一个能亲手判断的瞬间", "把现象写成可操作的代码世界", "核对事实锚点与知识边界"],
   resolving: ["读取你刚才留下的判断", "写下一条可以复述的答案", "为下一次远行生成三条航线"],
   charting: ["辨认这句话真正指向的问题", "在六片星域中寻找坐标", "寻找它与旧星之间的联系"],
 };
@@ -72,6 +70,8 @@ function inferSector(field = ""): SectorKey {
 
 function sectorFor(node: AtlasNode) { return node.sector || inferSector(node.field); }
 function sectorInfo(key: SectorKey) { return SECTORS.find((sector) => sector.key === key) || SECTORS[4]; }
+function encounterKey(node: AtlasNode) { return `${node.name.trim()}::${node.field.trim()}`; }
+function wait(milliseconds: number) { return new Promise((resolve) => window.setTimeout(resolve, milliseconds)); }
 function roundCoord(value: number) { return Number(value.toFixed(4)); }
 function sectorCenter(sector: (typeof SECTORS)[number]) {
   const radians = sector.angle * Math.PI / 180;
@@ -189,26 +189,6 @@ function volumePosition(volume: KnowledgeVolume, positions: Map<string, { x: num
   const points = volume.nodeIds.map((id) => positions.get(id)).filter(Boolean) as Array<{ x: number; y: number }>;
   if (!points.length) return null;
   return { x: roundCoord(points.reduce((sum, point) => sum + point.x, 0) / points.length), y: roundCoord(points.reduce((sum, point) => sum + point.y, 0) / points.length) };
-}
-
-function directionalTarget(currentId: string, candidates: AtlasNode[], positions: Map<string, AtlasPosition>, direction: FlightDirection) {
-  const current = positions.get(currentId);
-  if (!current) return null;
-  let best: { id: string; score: number } | null = null;
-  for (const candidate of candidates) {
-    if (candidate.id === currentId) continue;
-    const point = positions.get(candidate.id);
-    if (!point) continue;
-    const dx = point.x - current.x;
-    const dy = point.y - current.y;
-    const horizontal = direction === "left" || direction === "right";
-    const forward = direction === "left" ? -dx : direction === "right" ? dx : direction === "up" ? -dy : dy;
-    if (forward <= .7) continue;
-    const sideways = horizontal ? Math.abs(dy) * 1.25 : Math.abs(dx) * .75;
-    const score = forward + sideways * 2.4 + (sideways / forward) * 9;
-    if (!best || score < best.score) best = { id: candidate.id, score };
-  }
-  return best?.id || null;
 }
 
 function playerAnswerFrom(payload: Record<string, unknown>, encounter?: Encounter | null) {
@@ -353,6 +333,7 @@ function KnowledgeArticle({ record, onRoute, onReplay, live }: { record: Knowled
   return <article className={`sheet-reveal ${live ? "live" : "memory"}`}>
     <header className={`verdict-stage verdict-${record.verdict}`}><span><i aria-hidden="true" />{verdictCopy.label}</span><div><small>{verdictCopy.title}</small><h2>{record.answerTitle}</h2><p>{live ? record.echo : "已经收入你的星图"}</p></div></header>
     <div className="result-ribbon"><small>你的动作</small><b>{record.playerAnswer}</b><i aria-hidden="true">→</i><span>现实回应</span></div>
+    {record.flightNote ? <p className="flight-imprint"><small>航行影响</small><span>{record.flightNote}</span></p> : null}
     <aside className="question-upgrade"><small>获得一个新问题</small><p>{record.whyItMatters}</p></aside>
     <div className="departures"><header><span>下一跳</span><small>选一颗，星图会长出新线</small></header><div>{record.nextNodes.map((route, index) => <button type="button" key={`${route.kind}-${route.name}`} onClick={() => onRoute(route)} aria-label={`${route.name}：${route.promise}`}><i aria-hidden="true"><b>{index + 1}</b></i><small>{route.kind === "deeper" ? "深入" : route.kind === "bridge" ? "横渡" : "跃迁"}</small><strong>{route.name}</strong></button>)}</div></div>
     <details className="knowledge-vault"><summary><span><b>看懂为什么</b><small>现场 · 解释 · 迁移 · 边界</small></span><i aria-hidden="true">＋</i></summary><div>
@@ -389,16 +370,22 @@ export function CuriosityGame() {
   const [newNodeIds, setNewNodeIds] = useState<string[]>([]);
   const [storageReady, setStorageReady] = useState(false);
   const [navigatorId, setNavigatorId] = useState<string | null>(null);
-  const [flightTrace, setFlightTrace] = useState<FlightTrace | null>(null);
-  const [flightFeedback, setFlightFeedback] = useState<FlightFeedback>({ kind: "arrive", serial: 0 });
+  const [voyageTargetId, setVoyageTargetId] = useState<string | null>(null);
+  const [voyagePhase, setVoyagePhase] = useState<VoyagePhase>("idle");
+  const [voyageRun, setVoyageRun] = useState(0);
+  const [readyEncounterKeys, setReadyEncounterKeys] = useState<Set<string>>(() => new Set());
+  const [flightTelemetry, setFlightTelemetry] = useState<FlightTelemetry>({ speed: 0, distance: 0, signal: 0, probes: 0, samples: 0 });
   const [waitBeat, setWaitBeat] = useState(0);
   const [questionOpen, setQuestionOpen] = useState(false);
   const [structureLens, setStructureLens] = useState<StructureLens>("all");
   const [inspectedEdgeKey, setInspectedEdgeKey] = useState<string | null>(null);
   const [freshEdgeKey, setFreshEdgeKey] = useState<string | null>(null);
   const requestSerial = useRef(0);
-  const flightSerial = useRef(0);
-  const pointerStart = useRef<{ x: number; y: number } | null>(null);
+  const voyageSerial = useRef(0);
+  const encounterPromises = useRef(new Map<string, Promise<Encounter>>());
+  const encounterData = useRef(new Map<string, Encounter>());
+  const latestFlightTelemetry = useRef<FlightTelemetry>({ speed: 0, distance: 0, signal: 0, probes: 0, samples: 0 });
+  const completedFlightTelemetry = useRef<FlightTelemetry>({ speed: 0, distance: 0, signal: 0, probes: 0, samples: 0 });
   const questionRef = useRef<HTMLInputElement>(null);
   const introRef = useRef<HTMLElement>(null);
   const observationRef = useRef<HTMLElement>(null);
@@ -436,9 +423,10 @@ export function CuriosityGame() {
   const flightNode = visibleNavigatorNode || (recommended && visibleNodeIds.has(recommended.id) ? recommended : null) || visibleNodes.find((node) => node.status === "frontier") || visibleNodes[0] || null;
   const inspectedNode = inspectedId && visibleNodeIds.has(inspectedId) ? nodeById.get(inspectedId) || null : null;
   const dockNode = inspectedNode || flightNode;
-  const flightPosition = flightNode ? positions.get(flightNode.id) || null : null;
-  const traceFrom = flightTrace ? positions.get(flightTrace.from) || null : null;
-  const traceTo = flightTrace ? positions.get(flightTrace.to) || null : null;
+  const voyageNode = voyageTargetId ? nodeById.get(voyageTargetId) || null : null;
+  const voyagePosition = voyageNode ? positions.get(voyageNode.id) || null : null;
+  const flightTarget = voyageNode && voyagePosition ? { id: voyageNode.id, mission: voyageRun, x: voyagePosition.x, y: voyagePosition.y, color: sectorInfo(sectorFor(voyageNode)).color } : null;
+  const worldReady = Boolean(voyageNode?.knowledge || (voyageNode && readyEncounterKeys.has(encounterKey(voyageNode))));
   const activeSectorInfo = activeSector === "all" ? null : sectorInfo(activeSector);
   const overlayKey = resetOpen ? "reset" : volumeReveal ? "volume" : constellationReveal ? "constellation" : archiveOpen ? "archive" : selectedId ? "observation" : introOpen && storageReady ? "intro" : "";
   const latestProfile = atlas.profileSignals.at(-1) || "你的好奇心轮廓会随着探索逐渐显影";
@@ -467,7 +455,7 @@ export function CuriosityGame() {
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(""), 3000); return () => window.clearTimeout(timer); }, [toast]);
   useEffect(() => { if (!newNodeIds.length) return; const timer = window.setTimeout(() => setNewNodeIds([]), 2400); return () => window.clearTimeout(timer); }, [newNodeIds]);
   useEffect(() => { if (!freshEdgeKey) return; const timer = window.setTimeout(() => setFreshEdgeKey(null), 3200); return () => window.clearTimeout(timer); }, [freshEdgeKey]);
-  useEffect(() => { if (!charting && stage !== "loading" && stage !== "resolving") return; const timer = window.setInterval(() => setWaitBeat((beat) => (beat + 1) % 3), 1350); return () => window.clearInterval(timer); }, [charting, stage]);
+  useEffect(() => { if (!charting && stage !== "resolving") return; const timer = window.setInterval(() => setWaitBeat((beat) => (beat + 1) % 3), 1350); return () => window.clearInterval(timer); }, [charting, stage]);
   useEffect(() => {
     if (!overlayKey) return;
     const target = overlayKey === "reset" ? resetRef.current : overlayKey === "volume" ? volumeRef.current : overlayKey === "constellation" ? constellationRef.current : overlayKey === "archive" ? archiveRef.current : overlayKey === "observation" ? observationRef.current : introRef.current;
@@ -478,6 +466,7 @@ export function CuriosityGame() {
 
   function mapContext() { return { discovered: discovered.map((node) => node.name), frontier: frontiers.map((node) => node.name), fields: [...discoveredFields] }; }
   function haptic(pattern: number | number[] = 10) { if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(pattern); }
+  function receiveFlightTelemetry(telemetry: FlightTelemetry) { latestFlightTelemetry.current = telemetry; setFlightTelemetry(telemetry); }
   function clearObservation() { setEncounter(null); setResolution(null); setArranged([]); setScaleValue(50); setHypothesisIndex(null); setFallbackOpen(false); }
   function closeObservation() { requestSerial.current += 1; setSelectedId(null); setStage("summary"); clearObservation(); }
   function closeTopOverlay() {
@@ -498,16 +487,71 @@ export function CuriosityGame() {
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   }
 
-  async function launchEncounter(node: AtlasNode) {
-    if (engine !== "ready") { setToast("AI世界引擎尚未连接；检查密钥后再试一次"); return; }
-    setSelectedId(node.id); setIntroOpen(false); clearObservation(); haptic(12);
-    setWaitBeat(0); setStage("loading"); const requestId = ++requestSerial.current;
-    try {
-      const data = await atlasRequest({ mode: "encounter", node, map: mapContext() });
-      if (requestId !== requestSerial.current) return;
-      setEncounter(data as Encounter); setStage("observe"); haptic([8, 35, 8]);
-    } catch (error) { if (requestId !== requestSerial.current) return; setSelectedId(null); setStage("summary"); clearObservation(); setToast(error instanceof Error ? error.message : "观测没有成形，请再试一次"); }
+  function primeEncounter(node: AtlasNode) {
+    const key = encounterKey(node);
+    const cached = encounterData.current.get(key);
+    if (cached) return Promise.resolve(cached);
+    const active = encounterPromises.current.get(key);
+    if (active) return active;
+    const promise = atlasRequest({ mode: "encounter", node, map: mapContext() }).then((data) => {
+      const encounterResult = data as Encounter;
+      encounterData.current.set(key, encounterResult);
+      setReadyEncounterKeys((current) => { const next = new Set(current); next.add(key); return next; });
+      return encounterResult;
+    });
+    encounterPromises.current.set(key, promise);
+    return promise;
   }
+
+  function beginVoyage(node: AtlasNode) {
+    if (node.status === "origin") { if (recommended) beginVoyage(recommended); else setToast("先投下一个真实问题，让第一颗星诞生"); return; }
+    if (!node.knowledge && engine !== "ready") { setToast("AI世界引擎尚未连接；检查密钥后再试一次"); return; }
+    if (navigatorId === node.id && voyagePhase === "idle" && node.knowledge) { selectNode(node); return; }
+    requestSerial.current += 1;
+    voyageSerial.current += 1;
+    setSelectedId(null);
+    setIntroOpen(false);
+    clearObservation();
+    setActiveSector(sectorFor(node));
+    setNavigatorId(node.id);
+    setInspectedId(node.id);
+    setVoyageTargetId(node.id);
+    setVoyageRun((run) => run + 1);
+    setVoyagePhase("cruise");
+    setFlightTelemetry({ speed: 0, distance: 0, signal: 4, probes: 0, samples: 0 });
+    haptic(12);
+    if (!node.knowledge) void primeEncounter(node).catch(() => undefined);
+  }
+
+  async function arriveAtVoyageTarget(nodeId: string) {
+    if (nodeId !== voyageTargetId) return;
+    const serial = voyageSerial.current;
+    const node = nodeById.get(nodeId);
+    if (!node) return;
+    setVoyagePhase("scanning");
+    haptic([7, 26, 7]);
+    try {
+      const data = node.knowledge ? null : encounterData.current.get(encounterKey(node)) || await primeEncounter(node);
+      if (serial !== voyageSerial.current) return;
+      setVoyagePhase("ready");
+      haptic([8, 32, 8, 58, 18]);
+      await wait(720);
+      if (serial !== voyageSerial.current) return;
+      completedFlightTelemetry.current = latestFlightTelemetry.current;
+      setSelectedId(node.id);
+      clearObservation();
+      if (node.knowledge) setStage("summary");
+      else { setEncounter(data); setStage("observe"); }
+      setVoyagePhase("idle");
+    } catch (error) {
+      if (serial !== voyageSerial.current) return;
+      encounterPromises.current.delete(encounterKey(node));
+      setVoyagePhase("idle");
+      setToast(error instanceof Error ? error.message : "这个异常世界没有成形；换一颗星继续航行");
+    }
+  }
+
+  function launchEncounter(node: AtlasNode) { beginVoyage(node); }
 
   function selectNode(node: AtlasNode) {
     requestSerial.current += 1;
@@ -517,7 +561,7 @@ export function CuriosityGame() {
   }
 
   function chooseSector(sector: SectorKey | "all", targetId?: string) {
-    setActiveSector(sector); setNavigatorId(targetId || null); setFlightTrace(null); setInspectedId(targetId || null); haptic(7);
+    setActiveSector(sector); setNavigatorId(targetId || null); setInspectedId(targetId || null); haptic(7);
   }
 
   function chooseStructureLens(lens: StructureLens) {
@@ -529,47 +573,22 @@ export function CuriosityGame() {
 
   function lockRecommended() {
     if (!recommended) return;
-    launchEncounter(recommended);
+    beginVoyage(recommended);
   }
 
   function focusNode(node: AtlasNode) {
-    selectNode(node);
-  }
-
-  function moveFlight(direction: FlightDirection) {
-    if (!flightNode) return;
-    const nextId = directionalTarget(flightNode.id, visibleNodes, positions, direction);
-    const serial = ++flightSerial.current;
-    if (!nextId) { setFlightFeedback({ kind: "blocked", serial }); haptic([12, 30, 12]); return; }
-    setFlightTrace({ from: flightNode.id, to: nextId, serial }); setFlightFeedback({ kind: "arrive", serial }); setNavigatorId(nextId); setInspectedId(nextId); haptic(7);
-  }
-
-  function activateFlightNode() {
-    if (!flightNode) return;
-    selectNode(flightNode);
-  }
-
-  function handlePointerDown(event: ReactPointerEvent<HTMLElement>) {
-    if ((event.target as HTMLElement).closest("button, input, summary")) return;
-    pointerStart.current = { x: event.clientX, y: event.clientY };
-  }
-
-  function handlePointerUp(event: ReactPointerEvent<HTMLElement>) {
-    if (!pointerStart.current) return;
-    const dx = event.clientX - pointerStart.current.x; const dy = event.clientY - pointerStart.current.y;
-    pointerStart.current = null;
-    if (Math.max(Math.abs(dx), Math.abs(dy)) < 34) return;
-    moveFlight(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up"));
+    beginVoyage(node);
   }
 
   async function resolveObservation(payload: Record<string, unknown>) {
     if (!selectedNode || !encounter || stage !== "observe") return;
     setWaitBeat(0); setStage("resolving"); const requestId = ++requestSerial.current;
     try {
-      const data = await atlasRequest({ mode: "resolve", token: encounter.token, ...payload });
+      const flight = completedFlightTelemetry.current;
+      const data = await atlasRequest({ mode: "resolve", token: encounter.token, ...payload, flight: { signal: flight.signal, samples: flight.samples, probes: flight.probes } });
       if (requestId !== requestSerial.current) return;
       const resolved = { ...(data as Omit<Resolution, "player_answer">), player_answer: playerAnswerFrom(payload, encounter) } as Resolution;
-      const knowledge: KnowledgeRecord = { signal: encounter.signal, question: encounter.question, playerAnswer: playerAnswerFrom(payload, encounter), verdict: resolved.verdict, echo: resolved.echo, answerTitle: resolved.answer_title, scene: resolved.scene, explanation: resolved.explanation, terms: resolved.terms, whyItMatters: resolved.why_it_matters, transfer: resolved.transfer, sourceNote: resolved.source_note, nextNodes: resolved.next_nodes, discoveredAt: atlas.expeditions + 1 };
+      const knowledge: KnowledgeRecord = { signal: encounter.signal, question: encounter.question, playerAnswer: playerAnswerFrom(payload, encounter), verdict: resolved.verdict, echo: resolved.echo, answerTitle: resolved.answer_title, scene: resolved.scene, explanation: resolved.explanation, terms: resolved.terms, whyItMatters: resolved.why_it_matters, transfer: resolved.transfer, flightNote: resolved.flight_note, sourceNote: resolved.source_note, nextNodes: resolved.next_nodes, discoveredAt: atlas.expeditions + 1 };
       setAtlas((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === selectedNode.id ? { ...node, status: "discovered" as const, spark: resolved.spark, knowledge } : node), profileSignals: [...current.profileSignals, resolved.profile_signal].slice(-12), expeditions: current.expeditions + 1, trail: [...current.trail, selectedNode.id].slice(-60) }));
       setNewNodeIds([selectedNode.id]); setStructureLens("point"); setResolution(resolved); setStage("reveal"); haptic([10, 45, 18]);
     } catch (error) { if (requestId !== requestSerial.current) return; setToast(error instanceof Error ? error.message : "这页档案没有写完，请再试一次"); setStage("observe"); }
@@ -621,9 +640,10 @@ export function CuriosityGame() {
     if (!selectedNode) return;
     const existing = atlas.nodes.find((node) => node.name === route.name);
     const nextId = existing?.id || `route-${atlas.nodes.length}-${atlas.expeditions}-${route.kind}`;
+    const targetNode: AtlasNode = existing || { id: nextId, name: route.name, field: route.field, hook: route.promise, status: "frontier", sector: route.sector || inferSector(route.field), connectionReason: route.connection_reason };
     const newEdgeKey = `${selectedNode.id}->${nextId}`;
-    setAtlas((current) => ({ ...current, nodes: existing ? current.nodes : [...current.nodes, { id: nextId, name: route.name, field: route.field, hook: route.promise, status: "frontier", sector: route.sector || inferSector(route.field), connectionReason: route.connection_reason }], edges: current.edges.some((edge) => edge.from === selectedNode.id && edge.to === nextId) ? current.edges.map((edge) => edge.from === selectedNode.id && edge.to === nextId ? { ...edge, traversed: true } : edge) : [...current.edges, { from: selectedNode.id, to: nextId, kind: route.kind === "deeper" ? "normal" : route.kind, reason: route.connection_reason, traversed: true, createdAt: current.expeditions }] }));
-    setNewNodeIds([nextId]); setFreshEdgeKey(newEdgeKey); setInspectedEdgeKey(newEdgeKey); setStructureLens("line"); setActiveSector(route.sector || inferSector(route.field)); setNavigatorId(nextId); closeObservation(); setToast(`一条新线出现：${route.connection_reason}`); await nameConstellationIfDue();
+    setAtlas((current) => ({ ...current, nodes: existing ? current.nodes : [...current.nodes, targetNode], edges: current.edges.some((edge) => edge.from === selectedNode.id && edge.to === nextId) ? current.edges.map((edge) => edge.from === selectedNode.id && edge.to === nextId ? { ...edge, traversed: true } : edge) : [...current.edges, { from: selectedNode.id, to: nextId, kind: route.kind === "deeper" ? "normal" : route.kind, reason: route.connection_reason, traversed: true, createdAt: current.expeditions }] }));
+    setNewNodeIds([nextId]); setFreshEdgeKey(newEdgeKey); setInspectedEdgeKey(newEdgeKey); setStructureLens("line"); closeObservation(); setToast(`跃迁航线形成：${route.connection_reason}`); beginVoyage(targetNode); void nameConstellationIfDue();
   }
 
   async function chartThought() {
@@ -648,28 +668,31 @@ export function CuriosityGame() {
     catch { setToast("暂时无法复制；请允许剪贴板权限后再试一次"); }
   }
 
-  function resetAtlas() { setAtlas(INITIAL_ATLAS); closeObservation(); setIntroOpen(true); setArchiveOpen(false); setResetOpen(false); setActiveSector("all"); setStructureLens("all"); setInspectedId(null); setInspectedEdgeKey(null); setFreshEdgeKey(null); setNavigatorId(null); setFlightTrace(null); for (const key of [STORAGE_KEY, ...OLD_STORAGE_KEYS]) window.localStorage.removeItem(key); }
+  function resetAtlas() { setAtlas(INITIAL_ATLAS); closeObservation(); setIntroOpen(true); setArchiveOpen(false); setResetOpen(false); setActiveSector("all"); setStructureLens("all"); setInspectedId(null); setInspectedEdgeKey(null); setFreshEdgeKey(null); setNavigatorId(null); setVoyageTargetId(null); setVoyagePhase("idle"); encounterPromises.current.clear(); encounterData.current.clear(); setReadyEncounterKeys(new Set()); for (const key of [STORAGE_KEY, ...OLD_STORAGE_KEYS]) window.localStorage.removeItem(key); }
 
   useEffect(() => {
-    function onFlightKey(event: KeyboardEvent) {
+    function onMapKey(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
       if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
       if (overlayKey) return;
-      if (event.key === "Escape" && activeSector !== "all") { event.preventDefault(); chooseSector("all"); return; }
-      const direction: FlightDirection | null = event.key === "w" || event.key === "W" || event.key === "ArrowUp" ? "up" : event.key === "s" || event.key === "S" || event.key === "ArrowDown" ? "down" : event.key === "a" || event.key === "A" || event.key === "ArrowLeft" ? "left" : event.key === "d" || event.key === "D" || event.key === "ArrowRight" ? "right" : null;
-      if (direction) { event.preventDefault(); moveFlight(direction); return; }
-      if (event.key !== "Enter" && event.code !== "Space") return;
-      if (target?.closest("button, a, summary")) return;
-      event.preventDefault(); activateFlightNode();
+      if (event.key === "Escape" && activeSector !== "all") { event.preventDefault(); setActiveSector("all"); setNavigatorId(null); setInspectedId(null); haptic(7); }
     }
-    window.addEventListener("keydown", onFlightKey);
-    return () => window.removeEventListener("keydown", onFlightKey);
-  // The navigation helpers intentionally capture the current projected map.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSector, flightNode, overlayKey, positions, visibleNodes]);
+    window.addEventListener("keydown", onMapKey);
+    return () => window.removeEventListener("keydown", onMapKey);
+  }, [activeSector, overlayKey]);
 
-  const liveKnowledge = selectedNode && encounter && resolution ? { signal: encounter.signal, question: encounter.question, playerAnswer: resolution.player_answer, verdict: resolution.verdict, echo: resolution.echo, answerTitle: resolution.answer_title, scene: resolution.scene, explanation: resolution.explanation, terms: resolution.terms, whyItMatters: resolution.why_it_matters, transfer: resolution.transfer, sourceNote: resolution.source_note, nextNodes: resolution.next_nodes, discoveredAt: atlas.expeditions } satisfies KnowledgeRecord : null;
-  const routeReason = dockNode?.connectionReason || atlas.edges.find((edge) => edge.to === dockNode?.id)?.reason || dockNode?.hook || "选择一个方向，世界会从这里继续长大";
+  useEffect(() => {
+    if (!storageReady || engine !== "ready" || !recommended?.id) return;
+    void primeEncounter(recommended).catch(() => undefined);
+  // The suggested frontier is deliberately prefetched as soon as the engine is ready.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, recommended?.id, storageReady]);
+
+  const liveKnowledge = selectedNode && encounter && resolution ? { signal: encounter.signal, question: encounter.question, playerAnswer: resolution.player_answer, verdict: resolution.verdict, echo: resolution.echo, answerTitle: resolution.answer_title, scene: resolution.scene, explanation: resolution.explanation, terms: resolution.terms, whyItMatters: resolution.why_it_matters, transfer: resolution.transfer, flightNote: resolution.flight_note, sourceNote: resolution.source_note, nextNodes: resolution.next_nodes, discoveredAt: atlas.expeditions } satisfies KnowledgeRecord : null;
+  const hudNode = voyagePhase === "idle" ? dockNode : voyageNode || dockNode;
+  const routeReason = hudNode?.connectionReason || atlas.edges.find((edge) => edge.to === hudNode?.id)?.reason || hudNode?.hook || "选择一个方向，世界会从这里继续长大";
+  const voyageLabel = voyagePhase === "cruise" ? "深空巡航" : voyagePhase === "scanning" ? "异常扫描" : voyagePhase === "ready" ? "世界显影" : "自由航行";
+  const voyageInstruction = voyagePhase === "cruise" ? `剩余 ${flightTelemetry.distance} 光程 · 驶过金色信标，或按 Space 远距采样` : voyagePhase === "scanning" ? "绕行异常并发射探针；你的采样方式会改变 AI 给出的下一跳" : voyagePhase === "ready" ? "异常已经回应，舱门正在打开" : routeReason;
   return (
     <main className={`archive-shell ${storageReady ? "is-ready" : "is-opening"}`}>
       <a className="skip-link" href="#star-chart">跳到星图</a>
@@ -679,7 +702,7 @@ export function CuriosityGame() {
         <nav className="archive-tools" aria-label="档案工具"><button type="button" onClick={() => setIntroOpen(true)} aria-label="查看百门计划序言">为什么</button><button className="archive-button" type="button" onClick={() => setArchiveOpen(true)}>提问地图 <b>{fieldCount}</b></button></nav>
       </header>
 
-      <section id="star-chart" className={`chart-viewport lens-${structureLens} ${activeSector === "all" ? "overview" : "sector-focus"} ${navigatorId ? "flight-active" : "flight-standby"} ${charting ? "is-charting" : ""}`} aria-label="个人知识天球图" aria-keyshortcuts="W A S D ArrowUp ArrowDown ArrowLeft ArrowRight Enter Escape" onPointerDown={handlePointerDown} onPointerUp={handlePointerUp}>
+      <section id="star-chart" className={`chart-viewport lens-${structureLens} ${activeSector === "all" ? "overview" : "sector-focus"} ${voyagePhase !== "idle" ? `flight-active phase-${voyagePhase}` : "flight-standby"} ${charting ? "is-charting" : ""}`} aria-label="个人知识天球图" aria-keyshortcuts="W A S D ArrowUp ArrowDown ArrowLeft ArrowRight Shift Space Escape">
         <div className="paper-grain" aria-hidden="true" />
         <nav className="sky-index" aria-label="知识星域">
           <button className={activeSector === "all" ? "active" : ""} type="button" aria-pressed={activeSector === "all"} onClick={() => chooseSector("all")}>全图 <sup>{fieldCount}/100</sup></button>
@@ -709,8 +732,9 @@ export function CuriosityGame() {
           <svg className="chart-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             {activeSector === "all" ? uniqueConstellations.map((face) => { const geometry = faceGeometry(face, positions); if (!geometry) return null; return <polygon className="knowledge-face" key={face.id} points={geometry.points} vectorEffect="non-scaling-stroke" />; }) : null}
             {atlas.edges.map((edge, index) => { const from = positions.get(edge.from); const to = positions.get(edge.to); if (!from || !to) return null; const key = atlasEdgeKey(edge); const adjacent = edge.from === flightNode?.id || edge.to === flightNode?.id; return <line key={`${key}-${index}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} className={`${edge.kind} ${edge.traversed ? "traversed" : "untraversed"} ${adjacent ? "adjacent" : ""} ${freshEdgeKey === key ? "structure-newborn" : ""} ${inspectedEdgeKey === key ? "structure-selected" : ""}`} vectorEffect="non-scaling-stroke" />; })}
-            {traceFrom && traceTo && flightTrace ? <line key={flightTrace.serial} className="flight-trace" x1={traceFrom.x} y1={traceFrom.y} x2={traceTo.x} y2={traceTo.y} vectorEffect="non-scaling-stroke" /> : null}
           </svg>
+
+          <SpaceFlight active={!overlayKey && !charting} phase={voyagePhase} target={flightTarget} worldReady={worldReady} onArrive={arriveAtVoyageTarget} onTelemetry={receiveFlightTelemetry} />
 
           {structureLens === "line" ? atlas.edges.filter((edge) => edge.traversed).map((edge) => { const point = edgeMidpoint(edge, positions); if (!point) return null; const key = atlasEdgeKey(edge); const fromNode = nodeById.get(edge.from); const toNode = nodeById.get(edge.to); const selected = inspectedEdgeKey === key; return <button className={`edge-marker ${selected ? "selected" : ""} ${freshEdgeKey === key ? "newborn" : ""} ${point.x > 58 ? "label-left" : ""} ${point.y > 62 ? "label-up" : ""}`} type="button" key={key} style={{ left: `${point.x}%`, top: `${point.y}%` }} onClick={(event) => { event.stopPropagation(); setInspectedEdgeKey(key); haptic(5); }} aria-label={`${fromNode?.name || "起点"}连接${toNode?.name || "下一点"}：${edge.reason || "由一次选择相连"}`}><i aria-hidden="true" /><span><small>{fromNode?.name || "起点"} → {toNode?.name || "下一点"}</small><b>{edge.reason || "由一次选择相连"}</b></span></button>; }) : null}
 
@@ -719,7 +743,6 @@ export function CuriosityGame() {
 
           {visibleNodes.map((node) => { const position = positions.get(node.id); if (!position) return null; const guided = recommended?.id === node.id; const inspected = inspectedId === node.id; const navigated = flightNode?.id === node.id; const recent = recentIds.has(node.id); const labelVisible = inspected || newNodeIds.includes(node.id); const info = sectorInfo(sectorFor(node)); const pointInteractive = structureLens === "all" || structureLens === "point"; return <button key={node.id} type="button" tabIndex={pointInteractive ? 0 : -1} className={`archive-star ${node.status} ${guided ? "guided" : ""} ${inspected ? "inspected" : ""} ${navigated ? "navigated" : ""} ${recent ? "recent" : ""} ${newNodeIds.includes(node.id) ? "newborn" : ""} ${labelVisible ? "show-label" : ""} ${position.x > 62 ? "label-left" : ""} ${position.y > 62 ? "label-up" : ""}`} style={{ left: `${position.x}%`, top: `${position.y}%`, "--star-color": info.color } as CSSProperties} onPointerEnter={() => pointInteractive && setInspectedId(node.id)} onPointerLeave={() => pointInteractive && setInspectedId(null)} onFocus={() => pointInteractive && setInspectedId(node.id)} onBlur={() => pointInteractive && setInspectedId(null)} onClick={(event) => { event.stopPropagation(); if (pointInteractive) focusNode(node); }} aria-current={navigated ? "true" : undefined} aria-label={`${node.name}，${node.field}，${node.status === "discovered" ? "已归档" : node.status === "origin" ? "起点" : "尚未观测"}`}><span className="star-halo" aria-hidden="true" /><i aria-hidden="true" /><span className="archive-star-label"><small>{node.field}</small><b>{node.name}</b></span></button>; })}
 
-          {flightPosition ? <div key={flightFeedback.serial} className={`star-navigator ${flightFeedback.kind}`} style={{ left: `${flightPosition.x}%`, top: `${flightPosition.y}%` }} aria-hidden="true"><i className="navigator-orbit" /><i className="navigator-arrival" /><b /></div> : null}
         </div>
 
         <aside className="structure-index" aria-label="知识结构涌现进度">
@@ -736,10 +759,11 @@ export function CuriosityGame() {
         <div className="map-legend" aria-live="polite"><strong>{activeLens ? `${activeLens.label} · ${activeLens.ability}` : "全结构 · 从观测到世界模型"}</strong><span><i />已走过</span><span><i />可探索</span><span><i />跨领域线</span><span><i />解释面</span></div>
 
         <aside className="flight-dock" aria-label="星图航行控制">
-          <header><small>{activeSector === "all" ? "远景导航" : `${activeSectorInfo?.label}星域 · 局部航行`}</small><span className="desktop-hint">WASD / 方向键</span><button className="question-toggle" type="button" onClick={() => setQuestionOpen((open) => !open)}>{questionOpen ? "收起问题" : "投下问题"}</button></header>
-          <div className="flight-target" aria-live="polite"><i style={{ "--star-color": dockNode ? sectorInfo(sectorFor(dockNode)).color : undefined } as CSSProperties} aria-hidden="true" /><p><b>{dockNode?.name || "等待星图"}</b><span>{dockNode?.field || ""}</span></p></div>
-          <p className="route-reason">{routeReason}</p>
-          <footer>{activeSector !== "all" ? <button className="back-action" type="button" onClick={() => chooseSector("all")}>返回全图</button> : <span className="swipe-hint">滑动或用方向键选择</span>}<button className="primary-flight" type="button" disabled={!flightNode} onClick={activateFlightNode}>{activeSector === "all" && flightNode?.id !== "origin" ? "进入星域" : flightNode?.status === "frontier" ? "开始观测" : flightNode?.status === "discovered" ? "打开完整档案" : "回到起点"}<kbd>Enter</kbd></button></footer>
+          <header><small>{voyageLabel}</small><span className="desktop-hint">WASD 驾驶 · Shift 加速</span><button className="question-toggle" type="button" onClick={() => setQuestionOpen((open) => !open)}>{questionOpen ? "收起问题" : "投下问题"}</button></header>
+          <div className="flight-target" aria-live="polite"><i style={{ "--star-color": hudNode ? sectorInfo(sectorFor(hudNode)).color : undefined } as CSSProperties} aria-hidden="true" /><p><b>{hudNode?.name || "等待星图"}</b><span>{hudNode?.field || ""}</span></p></div>
+          <div className="flight-instruments" aria-label="飞船仪表"><span><small>航速</small><b>{flightTelemetry.speed}</b></span><span><small>信号</small><b>{flightTelemetry.signal}%</b></span><span><small>样本</small><b>{flightTelemetry.samples}/4</b></span><i><b style={{ width: `${flightTelemetry.signal}%` }} /></i></div>
+          <p className="route-reason">{voyageInstruction}</p>
+          <footer>{activeSector !== "all" ? <button className="back-action" type="button" onClick={() => chooseSector("all")}>返回全图</button> : <span className="swipe-hint">拖动空域驾驶 · Space 探测</span>}{voyagePhase === "idle" && dockNode && dockNode.id !== "origin" ? <button className="primary-flight" type="button" onClick={() => beginVoyage(dockNode)}>驶向此处<kbd>↗</kbd></button> : <span className="flight-live"><i />{voyagePhase === "cruise" ? `已捕获 ${flightTelemetry.samples} 个信标` : voyagePhase === "scanning" ? `${flightTelemetry.probes} 枚探针已发射` : voyagePhase === "ready" ? "准备进入" : "引擎待命"}</span>}</footer>
         </aside>
 
         <form className={`question-entry ${questionOpen ? "open" : ""}`} onSubmit={(event) => { event.preventDefault(); chartThought(); }}><label htmlFor="new-question">把一个真实困惑变成知识入口</label><input ref={questionRef} id="new-question" name="new-question" autoComplete="off" placeholder="例如：为什么熟悉的路回程总显得更短…" maxLength={100} disabled={charting} /><button type="submit" disabled={charting}>{charting ? "正在寻找坐标…" : "收入夜空"}</button></form>
@@ -757,7 +781,7 @@ export function CuriosityGame() {
         <section className="intro-orbit" aria-labelledby="intro-example-title"><div className="intro-question"><small>一个真实困惑</small><b id="intro-example-title">为什么刷短视频，总是停不下来？</b><i aria-hidden="true" /></div><div className="intro-worlds" aria-label="一个问题可以打开三个知识世界"><span><i />神经科学</span><span><i />行为经济学</span><span><i />产品设计</span></div><p>不用先学三门课。玩过一次，你就知道该向 AI 追问什么。</p></section>
         <div className="intro-principle"><span><b>100</b><small>个提问起点</small></span><div className="dimension-sequence" aria-label="知识从点生长为世界模型"><i><b>点</b></i><em /><i><b>线</b></i><em /><i><b>面</b></i><em /><i><b>体</b></i></div></div>
         <div className="intro-outcome"><small>每次只做一件事</small><b>进入一个世界，动手改变它，然后决定下一跳。</b></div>
-        <div className="intro-footer"><button type="button" className="intro-start" onClick={() => { setIntroOpen(false); if (recommended) chooseSector(sectorFor(recommended), recommended.id); }}>去获得第 1 个提问起点</button><div className="intro-controls"><span><kbd>WASD</kbd> 航行</span><span><kbd>Enter</kbd> 观测</span><span>手机滑动选星</span></div></div>
+        <div className="intro-footer"><button type="button" className="intro-start" onClick={() => { setIntroOpen(false); if (recommended) beginVoyage(recommended); }}>启动第一次知识远征</button><div className="intro-controls"><span><kbd>WASD</kbd> 驾驶</span><span><kbd>Shift</kbd> 加速</span><span><kbd>Space</kbd> 发射探针</span></div></div>
       </section></div> : null}
 
       {selectedNode ? <section ref={observationRef} className="observation-stage" role="dialog" aria-modal="true" aria-label={`${selectedNode.name}观测页`} onKeyDown={trapDialog}>
@@ -765,18 +789,16 @@ export function CuriosityGame() {
           <header><p><span translate="no">OBSERVATION {String(selectedNode.knowledge?.discoveredAt || atlas.expeditions + (stage === "reveal" ? 0 : 1)).padStart(3, "0")}</span><i /> {selectedNode.field}</p><button type="button" className="quiet-close" onClick={closeObservation} aria-label="关闭观测页">×</button></header>
 
           {stage === "summary" && selectedNode.knowledge ? <KnowledgeArticle record={selectedNode.knowledge} onRoute={chooseRoute} onReplay={() => launchEncounter(selectedNode)} /> : null}
-          {stage === "loading" ? <div className="sheet-loading"><div className="scene-forge" aria-hidden="true"><i /><i /><i /><b /></div><small>AI 正在写这个世界</small><p>{WAIT_COPY.loading[waitBeat]}</p><span>代码、画面与规则同时生成</span></div> : null}
-
-          {stage === "observe" && encounter ? <div className="sheet-observe">
+          {(stage === "observe" || stage === "resolving") && encounter ? <div className={`sheet-observe ${stage === "resolving" ? "is-resolving" : ""}`}>
             <header className="observation-prompt"><span>{encounter.signal}</span><h2>{encounter.question}</h2></header>
             {encounter.artifact ? <GeneratedWorld key={encounter.token} artifact={encounter.artifact} encounter={encounter} onCommit={resolveObservation} onFallback={() => setFallbackOpen((open) => !open)} onPulse={() => haptic(6)} /> : <ObservationInstrument encounter={encounter} scaleValue={scaleValue} arranged={arranged} selectedChoice={hypothesisIndex} />}
             {fallbackVisible && encounter.interaction === "world" ? <div className="world-fallback"><small>场景没有响应？直接留下你看到的结果</small><div>{encounter.outcomes.map((outcome, index) => <button key={outcome.id} type="button" onClick={() => resolveObservation({ outcome: outcome.id })}><i>0{index + 1}</i><b>{outcome.label}</b></button>)}</div></div> : null}
             {fallbackVisible && encounter.interaction === "choice" ? <div className="choice-console"><div className="observation-choices" role="group" aria-label="选择一条变化假设">{encounter.choices.map((choice, index) => <button className={hypothesisIndex === index ? "selected" : ""} aria-pressed={hypothesisIndex === index} key={choice} type="button" onClick={() => { setHypothesisIndex(index); haptic(6); }}><i className={`hypothesis-swatch swatch-${index + 1}`} aria-hidden="true" /><span><small>假设 0{index + 1}</small><b>{choice}</b></span></button>)}</div><button className="hypothesis-lock" type="button" disabled={hypothesisIndex === null} onClick={() => { if (hypothesisIndex !== null) resolveObservation({ answer: encounter.choices[hypothesisIndex] }); }}>{hypothesisIndex === null ? "先选一条轨迹" : `锁定 0${hypothesisIndex + 1}`}</button></div> : null}
             {fallbackVisible && encounter.interaction === "scale" && encounter.scale ? <div className="scale-observation"><input type="range" min="0" max="100" value={scaleValue} onChange={(event) => setScaleValue(Number(event.target.value))} aria-label={`在${encounter.scale.left}与${encounter.scale.right}之间估计`} /><div><span>{encounter.scale.left}</span><i style={{ left: `${scaleValue}%` }} /><b>{scaleValue}</b><span>{encounter.scale.right}</span></div><button type="button" onClick={() => resolveObservation({ value: scaleValue })}>锁定</button></div> : null}
             {fallbackVisible && encounter.interaction === "arrange" ? <div className="arrange-observation"><div className="arranged-slots">{[0,1,2].map((index) => arranged[index] ? <button type="button" key={index} onClick={() => pickArrangeItem(arranged[index])} aria-label={`移除第${index + 1}位：${arranged[index]}`}><small>0{index + 1}</small><span>{arranged[index]}</span></button> : <span key={index}><small>0{index + 1}</small><i>等待放入</i></span>)}</div><div className="arrange-items">{encounter.items.map((item) => <button key={item} type="button" className={arranged.includes(item) ? "used" : ""} disabled={arranged.includes(item)} onClick={() => pickArrangeItem(item)}>{item}</button>)}</div><button className="ink-action" type="button" disabled={arranged.length !== 3} onClick={() => resolveObservation({ order: arranged })}>锁定顺序</button></div> : null}
+            {stage === "resolving" ? <div className="resolution-transit" role="status" aria-live="polite"><i aria-hidden="true" /><span><small>你的动作已经写入世界</small><b>{WAIT_COPY.resolving[waitBeat]}</b></span><em>{waitBeat + 1}/3</em></div> : null}
           </div> : null}
 
-          {stage === "resolving" ? <div className="sheet-loading resolving"><div className="scene-forge resolving" aria-hidden="true"><i /><i /><i /><b /></div><small>世界正在回应你的动作</small><p>{WAIT_COPY.resolving[waitBeat]}</p><span>完成后会点亮一颗新星</span></div> : null}
           {stage === "reveal" && liveKnowledge ? <KnowledgeArticle record={liveKnowledge} onRoute={chooseRoute} onReplay={() => launchEncounter(selectedNode)} live /> : null}
         </div>
       </section> : null}
