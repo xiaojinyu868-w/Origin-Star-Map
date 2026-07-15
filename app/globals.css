@@ -903,3 +903,231 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 1px 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* Flight is the product's primary surface. The atlas becomes a destination
+   chooser and a progression layer instead of surrounding the player at all times. */
+.cockpit-vignette, .flight-objective, .cockpit-actions, .flight-achievements { display: none; }
+
+.flight-coach {
+  position: absolute;
+  z-index: 61;
+  left: 50%;
+  top: 92px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 13px;
+  border: 1px solid rgba(180,151,104,.24);
+  background: rgba(4,8,7,.72);
+  color: var(--ash);
+  font: 12px/1.45 var(--serif);
+  transform: translateX(-50%);
+  backdrop-filter: blur(12px);
+  animation: veil-in .3s ease both;
+}
+
+.flight-coach kbd { padding: 4px 7px; border: 1px solid rgba(212,177,111,.42); color: var(--brass); font: 10px var(--sans); }
+.flight-coach b { margin-right: 6px; color: var(--bone); font-weight: 600; }
+
+.mode-flight .archive-header {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-100%);
+  transition: opacity .24s ease, transform .24s ease;
+}
+
+.mode-flight .chart-viewport {
+  top: 0;
+  background:
+    radial-gradient(circle at 50% 50%,rgba(26,46,43,.17),transparent 39%),
+    radial-gradient(circle at 78% 18%,rgba(93,62,48,.08),transparent 31%),
+    #020504;
+}
+
+.mode-flight .chart-canvas { inset: 0; z-index: 8; }
+.mode-flight .space-flight { cursor: none; }
+.mode-flight .celestial-grid { opacity: .2; transform: scale(1.14); }
+.mode-flight .chart-sector,
+.mode-flight .sector-field,
+.mode-flight .chart-lines,
+.mode-flight .edge-marker,
+.mode-flight .constellation-mark,
+.mode-flight .knowledge-volume-mark,
+.mode-flight .archive-star { visibility: hidden; pointer-events: none; opacity: 0; }
+
+.mode-flight .sky-index,
+.mode-flight .camera-crumb,
+.mode-flight .expedition-brief,
+.mode-flight .map-legend,
+.mode-flight .question-entry { display: none; }
+
+.mode-flight .structure-lens,
+.mode-flight .structure-index {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(16px);
+  transition: opacity .2s ease, transform .2s ease, visibility .2s step-end;
+}
+
+.mode-flight.map-tools-open .structure-lens,
+.mode-flight.map-tools-open .structure-index {
+  z-index: 64;
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+  transition: opacity .2s ease, transform .2s ease, visibility 0s step-start;
+}
+
+.mode-flight.map-tools-open .structure-lens { top: 88px; left: 24px; }
+.mode-flight.map-tools-open .structure-index { top: 88px; right: 24px; bottom: 96px; }
+
+.mode-flight .cockpit-vignette {
+  position: absolute;
+  z-index: 40;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg,rgba(0,0,0,.42),transparent 18%,transparent 82%,rgba(0,0,0,.42)),
+    linear-gradient(0deg,rgba(0,0,0,.68),transparent 24%,transparent 76%,rgba(0,0,0,.48)),
+    radial-gradient(ellipse at center,transparent 51%,rgba(0,0,0,.24) 74%,rgba(0,0,0,.7) 100%);
+  box-shadow: inset 0 0 0 1px rgba(201,184,148,.045),inset 0 -28px 90px rgba(0,0,0,.48);
+}
+
+.mode-flight .cockpit-vignette::before,
+.mode-flight .cockpit-vignette::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 54px;
+  height: 40%;
+  border-top: 1px solid rgba(127,185,180,.13);
+  border-bottom: 1px solid rgba(127,185,180,.08);
+  transform: translateY(-50%);
+}
+
+.mode-flight .cockpit-vignette::before { left: 0; border-right: 1px solid rgba(127,185,180,.1); clip-path: polygon(0 0,100% 16%,100% 84%,0 100%); }
+.mode-flight .cockpit-vignette::after { right: 0; border-left: 1px solid rgba(127,185,180,.1); clip-path: polygon(0 16%,100% 0,100% 100%,0 84%); }
+
+.mode-flight .flight-objective {
+  position: absolute;
+  z-index: 61;
+  left: max(28px,env(safe-area-inset-left));
+  top: max(24px,env(safe-area-inset-top));
+  display: grid;
+  min-width: 240px;
+  padding: 3px 0 4px 16px;
+  border-left: 2px solid var(--vermilion);
+  filter: drop-shadow(0 6px 14px rgba(0,0,0,.65));
+}
+
+.flight-objective small { color: var(--brass); font: 700 12px/1.3 var(--sans); letter-spacing: .1em; }
+.flight-objective h2 { max-width: 460px; margin: 5px 0 3px; color: var(--bone); font: 550 clamp(21px,2.2vw,30px)/1.18 var(--serif); text-wrap: balance; }
+.flight-objective p { display: flex; align-items: center; gap: 9px; margin: 0; color: var(--ash); font: 12px/1.5 var(--serif); }
+.flight-objective p i { width: 18px; height: 1px; background: var(--rule-strong); }
+
+.mode-flight .cockpit-actions {
+  position: absolute;
+  z-index: 62;
+  right: max(24px,env(safe-area-inset-right));
+  top: max(22px,env(safe-area-inset-top));
+  display: flex;
+  gap: 8px;
+}
+
+.cockpit-actions button {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid rgba(201,184,148,.22);
+  background: rgba(4,8,7,.64);
+  color: var(--ash);
+  cursor: pointer;
+  font: 600 12px var(--sans);
+  backdrop-filter: blur(10px);
+}
+
+.cockpit-actions button:hover,
+.cockpit-actions button[aria-pressed="true"] { border-color: rgba(180,151,104,.65); background: rgba(180,151,104,.08); color: var(--bone); }
+.cockpit-actions kbd { margin-right: 8px; padding: 2px 5px; border: 1px solid rgba(201,184,148,.28); color: var(--brass); font: 9px var(--sans); }
+
+.mode-flight .flight-dock {
+  z-index: 63;
+  right: auto;
+  left: max(28px,env(safe-area-inset-left));
+  bottom: max(24px,env(safe-area-inset-bottom));
+  width: min(720px,calc(100vw - 56px));
+  display: grid;
+  grid-template-columns: minmax(310px,1.2fr) minmax(230px,.8fr);
+  gap: 9px 22px;
+  padding: 14px 17px 13px;
+  border-color: rgba(201,184,148,.18);
+  border-left: 2px solid rgba(127,185,180,.62);
+  background: linear-gradient(110deg,rgba(5,9,8,.9),rgba(5,8,7,.68));
+  box-shadow: 0 18px 70px rgba(0,0,0,.5),inset 0 1px rgba(255,255,255,.018);
+  backdrop-filter: blur(18px) saturate(1.15);
+}
+
+.mode-flight .flight-dock > header { grid-column: 1 / -1; justify-content: flex-start; padding-bottom: 8px; border-bottom: 1px solid rgba(201,184,148,.1); }
+.mode-flight .flight-dock > header small { min-width: 88px; color: var(--dimension-face); font-size: 12px; }
+.mode-flight .flight-dock > header span { color: #929990; font-size: 12px; }
+.mode-flight .flight-target, .mode-flight .question-toggle { display: none; }
+.mode-flight .flight-instruments { grid-column: 1; grid-template-columns: repeat(4,minmax(62px,1fr)); gap: 7px 18px; margin: 0; padding: 0; border: 0; }
+.mode-flight .flight-instruments > span { display: grid; justify-content: start; gap: 3px; }
+.mode-flight .flight-instruments small { color: #9aa198; font-size: 11px; letter-spacing: .03em; }
+.mode-flight .flight-instruments span b { color: var(--bone); font-size: 15px; }
+.mode-flight .flight-instruments .signal-meter { grid-column: 1 / -1; height: 3px; margin-top: 2px; }
+.mode-flight .flight-achievements { grid-column: 2; display: flex; align-items: center; align-content: center; flex-wrap: wrap; gap: 8px 12px; padding-left: 18px; border-left: 1px solid rgba(201,184,148,.11); }
+.flight-achievements span { color: var(--ash); font: 12px var(--sans); }
+.flight-achievements span b { margin-left: 4px; color: var(--bone); font-size: 13px; }
+.flight-achievements strong { color: var(--brass); font: 600 12px var(--sans); }
+.flight-achievements em { width: 100%; color: #929990; font: normal 12px/1.4 var(--serif); }
+.mode-flight .route-reason { grid-column: 1 / -1; min-height: 0; margin: 1px 0 0; color: #b3b5aa; font: 12px/1.55 var(--serif); }
+.mode-flight .flight-dock footer { grid-column: 1 / -1; padding-top: 7px; border-top: 1px solid rgba(201,184,148,.08); }
+.mode-flight .flight-dock footer > span { font-size: 11px; }
+.mode-flight .flight-live { color: var(--dimension-face); }
+
+.archive-shell :where(button,input,summary,a):focus-visible {
+  outline: 2px solid rgba(212,177,111,.9);
+  outline-offset: 3px;
+}
+
+@media (max-width: 900px) {
+  .mode-flight .flight-objective { left: 16px; top: 15px; min-width: 0; }
+  .flight-objective h2 { max-width: min(62vw,430px); font-size: 21px; }
+  .mode-flight .cockpit-actions { right: 14px; top: 13px; }
+  .cockpit-actions button { padding-inline: 10px; }
+  .cockpit-actions button:last-child { display: none; }
+  .mode-flight .flight-dock { left: 14px; bottom: max(14px,env(safe-area-inset-bottom)); width: min(680px,calc(100vw - 28px)); }
+  .mode-flight.map-tools-open .structure-index { display: none; }
+  .mode-flight.map-tools-open .structure-lens { left: 14px; right: 14px; top: 82px; width: auto; }
+  .flight-coach { top: 78px; max-width: calc(100vw - 28px); }
+}
+
+@media (max-width: 620px) {
+  .mode-flight .space-flight { cursor: crosshair; }
+  .flight-coach { left: 14px; right: 14px; top: 73px; justify-content: center; font-size: 11px; transform: none; }
+  .mode-flight .flight-objective { padding-left: 11px; }
+  .flight-objective small { font-size: 10px; }
+  .flight-objective h2 { max-width: 55vw; margin-top: 3px; font-size: 17px; }
+  .flight-objective p { font-size: 10px; }
+  .cockpit-actions button { min-width: 44px; padding-inline: 9px; font-size: 10px; }
+  .cockpit-actions button:first-child { font-size: 0; }
+  .cockpit-actions kbd { margin: 0; font-size: 10px; }
+  .mode-flight .flight-dock {
+    grid-template-columns: 1fr;
+    gap: 7px;
+    padding: 10px 11px 9px;
+  }
+  .mode-flight .flight-dock > header { padding-bottom: 6px; }
+  .mode-flight .flight-dock > header .desktop-hint { font-size: 9px; }
+  .mode-flight .flight-instruments { grid-column: 1; gap: 5px 10px; }
+  .mode-flight .flight-instruments small { font-size: 10px; }
+  .mode-flight .flight-instruments span b { font-size: 12px; }
+  .mode-flight .flight-achievements { grid-column: 1; padding: 6px 0 0; border-top: 1px solid rgba(201,184,148,.09); border-left: 0; }
+  .mode-flight .route-reason { grid-column: 1; max-height: 40px; overflow: hidden; font-size: 11px; }
+  .mode-flight .flight-dock footer { grid-column: 1; }
+  .mode-flight .flight-dock footer .swipe-hint { display: none; }
+  .mode-flight.map-tools-open .structure-lens { top: 68px; grid-template-columns: repeat(5,1fr); }
+}

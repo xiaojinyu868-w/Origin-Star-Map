@@ -72,6 +72,17 @@ test("keeps DashScope behind the server-side atlas API", async () => {
   assert.match(flight, /requestAnimationFrame\(tick\)/);
   assert.match(flight, /\["w", "a", "s", "d"/);
   assert.match(flight, /SparkRuntime|scanStartedAt/);
+  assert.match(flight, /worldToScreen/);
+  assert.match(flight, /GravityWell/);
+  assert.match(flight, /missionRef\.current\.energy/);
+  assert.match(flight, /missionRef\.current\.integrity/);
+  assert.match(flight, /alignment > \.72/);
+  assert.match(flight, /spark-flight-audio/);
+  assert.match(game, /mode-flight/);
+  assert.match(game, /flightStyleName/);
+  assert.match(game, /扫描表现会改变 AI 的下一批航线/);
+  assert.match(api, /精确扫描/);
+  assert.match(api, /扫描锁定/);
   assert.doesNotMatch(game, /stage === "summary" && !selectedNode\.knowledge/);
   assert.doesNotMatch(game, /AI 正在写这个世界/);
   assert.doesNotMatch(game, /DASHSCOPE_API_KEY|sk-[a-zA-Z0-9]/);

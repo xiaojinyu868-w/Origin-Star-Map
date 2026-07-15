@@ -374,9 +374,11 @@ export function CuriosityGame() {
   const [voyagePhase, setVoyagePhase] = useState<VoyagePhase>("idle");
   const [voyageRun, setVoyageRun] = useState(0);
   const [readyEncounterKeys, setReadyEncounterKeys] = useState<Set<string>>(() => new Set());
-  const [flightTelemetry, setFlightTelemetry] = useState<FlightTelemetry>({ speed: 0, distance: 0, signal: 0, probes: 0, samples: 0 });
+  const [flightTelemetry, setFlightTelemetry] = useState<FlightTelemetry>({ speed: 0, distance: 0, signal: 0, probes: 0, samples: 0, energy: 100, integrity: 100, locks: 0, combo: 0 });
   const [waitBeat, setWaitBeat] = useState(0);
   const [questionOpen, setQuestionOpen] = useState(false);
+  const [mapToolsOpen, setMapToolsOpen] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(false);
   const [structureLens, setStructureLens] = useState<StructureLens>("all");
   const [inspectedEdgeKey, setInspectedEdgeKey] = useState<string | null>(null);
   const [freshEdgeKey, setFreshEdgeKey] = useState<string | null>(null);
@@ -384,8 +386,8 @@ export function CuriosityGame() {
   const voyageSerial = useRef(0);
   const encounterPromises = useRef(new Map<string, Promise<Encounter>>());
   const encounterData = useRef(new Map<string, Encounter>());
-  const latestFlightTelemetry = useRef<FlightTelemetry>({ speed: 0, distance: 0, signal: 0, probes: 0, samples: 0 });
-  const completedFlightTelemetry = useRef<FlightTelemetry>({ speed: 0, distance: 0, signal: 0, probes: 0, samples: 0 });
+  const latestFlightTelemetry = useRef<FlightTelemetry>({ speed: 0, distance: 0, signal: 0, probes: 0, samples: 0, energy: 100, integrity: 100, locks: 0, combo: 0 });
+  const completedFlightTelemetry = useRef<FlightTelemetry>({ speed: 0, distance: 0, signal: 0, probes: 0, samples: 0, energy: 100, integrity: 100, locks: 0, combo: 0 });
   const questionRef = useRef<HTMLInputElement>(null);
   const introRef = useRef<HTMLElement>(null);
   const observationRef = useRef<HTMLElement>(null);
@@ -518,7 +520,9 @@ export function CuriosityGame() {
     setVoyageTargetId(node.id);
     setVoyageRun((run) => run + 1);
     setVoyagePhase("cruise");
-    setFlightTelemetry({ speed: 0, distance: 0, signal: 4, probes: 0, samples: 0 });
+    setMapToolsOpen(false);
+    setQuestionOpen(false);
+    setFlightTelemetry({ speed: 0, distance: 0, signal: 4, probes: 0, samples: 0, energy: 100, integrity: 100, locks: 0, combo: 0 });
     haptic(12);
     if (!node.knowledge) void primeEncounter(node).catch(() => undefined);
   }
@@ -531,7 +535,12 @@ export function CuriosityGame() {
     setVoyagePhase("scanning");
     haptic([7, 26, 7]);
     try {
-      const data = node.knowledge ? null : encounterData.current.get(encounterKey(node)) || await primeEncounter(node);
+      const encounterPromise = node.knowledge
+        ? Promise.resolve(null)
+        : Promise.resolve(encounterData.current.get(encounterKey(node)) || primeEncounter(node));
+      // A short, playable scan replaces a blank loading pause. The AI request and
+      // the player's three timing locks run concurrently.
+      const [data] = await Promise.all([encounterPromise, wait(2800)]);
       if (serial !== voyageSerial.current) return;
       setVoyagePhase("ready");
       haptic([8, 32, 8, 58, 18]);
@@ -585,7 +594,7 @@ export function CuriosityGame() {
     setWaitBeat(0); setStage("resolving"); const requestId = ++requestSerial.current;
     try {
       const flight = completedFlightTelemetry.current;
-      const data = await atlasRequest({ mode: "resolve", token: encounter.token, ...payload, flight: { signal: flight.signal, samples: flight.samples, probes: flight.probes } });
+      const data = await atlasRequest({ mode: "resolve", token: encounter.token, ...payload, flight: { signal: flight.signal, samples: flight.samples, probes: flight.probes, locks: flight.locks, combo: flight.combo, integrity: flight.integrity } });
       if (requestId !== requestSerial.current) return;
       const resolved = { ...(data as Omit<Resolution, "player_answer">), player_answer: playerAnswerFrom(payload, encounter) } as Resolution;
       const knowledge: KnowledgeRecord = { signal: encounter.signal, question: encounter.question, playerAnswer: playerAnswerFrom(payload, encounter), verdict: resolved.verdict, echo: resolved.echo, answerTitle: resolved.answer_title, scene: resolved.scene, explanation: resolved.explanation, terms: resolved.terms, whyItMatters: resolved.why_it_matters, transfer: resolved.transfer, flightNote: resolved.flight_note, sourceNote: resolved.source_note, nextNodes: resolved.next_nodes, discoveredAt: atlas.expeditions + 1 };
@@ -668,18 +677,19 @@ export function CuriosityGame() {
     catch { setToast("暂时无法复制；请允许剪贴板权限后再试一次"); }
   }
 
-  function resetAtlas() { setAtlas(INITIAL_ATLAS); closeObservation(); setIntroOpen(true); setArchiveOpen(false); setResetOpen(false); setActiveSector("all"); setStructureLens("all"); setInspectedId(null); setInspectedEdgeKey(null); setFreshEdgeKey(null); setNavigatorId(null); setVoyageTargetId(null); setVoyagePhase("idle"); encounterPromises.current.clear(); encounterData.current.clear(); setReadyEncounterKeys(new Set()); for (const key of [STORAGE_KEY, ...OLD_STORAGE_KEYS]) window.localStorage.removeItem(key); }
+  function resetAtlas() { setAtlas(INITIAL_ATLAS); closeObservation(); setIntroOpen(true); setArchiveOpen(false); setResetOpen(false); setActiveSector("all"); setStructureLens("all"); setInspectedId(null); setInspectedEdgeKey(null); setFreshEdgeKey(null); setNavigatorId(null); setVoyageTargetId(null); setVoyagePhase("idle"); setMapToolsOpen(false); encounterPromises.current.clear(); encounterData.current.clear(); setReadyEncounterKeys(new Set()); for (const key of [STORAGE_KEY, ...OLD_STORAGE_KEYS]) window.localStorage.removeItem(key); }
 
   useEffect(() => {
     function onMapKey(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
       if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
       if (overlayKey) return;
+      if (event.key.toLowerCase() === "m" && voyagePhase !== "idle") { event.preventDefault(); setMapToolsOpen((open) => !open); haptic(6); return; }
       if (event.key === "Escape" && activeSector !== "all") { event.preventDefault(); setActiveSector("all"); setNavigatorId(null); setInspectedId(null); haptic(7); }
     }
     window.addEventListener("keydown", onMapKey);
     return () => window.removeEventListener("keydown", onMapKey);
-  }, [activeSector, overlayKey]);
+  }, [activeSector, overlayKey, voyagePhase]);
 
   useEffect(() => {
     if (!storageReady || engine !== "ready" || !recommended?.id) return;
@@ -692,9 +702,19 @@ export function CuriosityGame() {
   const hudNode = voyagePhase === "idle" ? dockNode : voyageNode || dockNode;
   const routeReason = hudNode?.connectionReason || atlas.edges.find((edge) => edge.to === hudNode?.id)?.reason || hudNode?.hook || "选择一个方向，世界会从这里继续长大";
   const voyageLabel = voyagePhase === "cruise" ? "深空巡航" : voyagePhase === "scanning" ? "异常扫描" : voyagePhase === "ready" ? "世界显影" : "自由航行";
-  const voyageInstruction = voyagePhase === "cruise" ? `剩余 ${flightTelemetry.distance} 光程 · 驶过金色信标，或按 Space 远距采样` : voyagePhase === "scanning" ? "绕行异常并发射探针；你的采样方式会改变 AI 给出的下一跳" : voyagePhase === "ready" ? "异常已经回应，舱门正在打开" : routeReason;
+  const voyageInstruction = voyagePhase === "cruise"
+    ? `剩余 ${flightTelemetry.distance} 光程 · 捕获金色样本，贴近引力井可获得能量，碰撞会损伤船体`
+    : voyagePhase === "scanning"
+      ? `光针进入金色窗口时按 Space · 已锁定 ${flightTelemetry.locks}/3；扫描表现会改变 AI 的下一批航线`
+      : voyagePhase === "ready" ? "你的航行记录已写入这个世界，舱门正在打开" : routeReason;
+  const immersiveFlight = voyagePhase !== "idle";
+  const flightStyleName = flightTelemetry.locks >= 2
+    ? "精密扫描"
+    : flightTelemetry.samples >= 3 && flightTelemetry.integrity >= 70
+      ? "远行采样"
+      : flightTelemetry.integrity < 70 ? "险境穿越" : "直达航行";
   return (
-    <main className={`archive-shell ${storageReady ? "is-ready" : "is-opening"}`}>
+    <main className={`archive-shell ${storageReady ? "is-ready" : "is-opening"} ${immersiveFlight ? "mode-flight" : "mode-atlas"} ${mapToolsOpen ? "map-tools-open" : ""}`}>
       <a className="skip-link" href="#star-chart">跳到星图</a>
       <header className="archive-header">
         <h1><button className="archive-brand" type="button" onClick={() => setIntroOpen(true)}><i aria-hidden="true">✦</i><span><b>星火档案</b><small translate="no">ATLAS OF UNFINISHED QUESTIONS</small></span></button></h1>
@@ -702,8 +722,20 @@ export function CuriosityGame() {
         <nav className="archive-tools" aria-label="档案工具"><button type="button" onClick={() => setIntroOpen(true)} aria-label="查看百门计划序言">为什么</button><button className="archive-button" type="button" onClick={() => setArchiveOpen(true)}>提问地图 <b>{fieldCount}</b></button></nav>
       </header>
 
-      <section id="star-chart" className={`chart-viewport lens-${structureLens} ${activeSector === "all" ? "overview" : "sector-focus"} ${voyagePhase !== "idle" ? `flight-active phase-${voyagePhase}` : "flight-standby"} ${charting ? "is-charting" : ""}`} aria-label="个人知识天球图" aria-keyshortcuts="W A S D ArrowUp ArrowDown ArrowLeft ArrowRight Shift Space Escape">
+      <section id="star-chart" className={`chart-viewport lens-${structureLens} ${activeSector === "all" ? "overview" : "sector-focus"} ${immersiveFlight ? `flight-active phase-${voyagePhase}` : "flight-standby"} ${charting ? "is-charting" : ""}`} aria-label="个人知识天球图" aria-keyshortcuts="W A S D ArrowUp ArrowDown ArrowLeft ArrowRight Shift Space M Escape">
         <div className="paper-grain" aria-hidden="true" />
+        <div className="cockpit-vignette" aria-hidden="true" />
+        {immersiveFlight ? <aside className="flight-objective" aria-live="polite">
+          <small>{voyageLabel} · 远征 {String(expeditionNumber).padStart(2, "0")}</small>
+          <h2>{hudNode?.name || "未命名异常"}</h2>
+          <p>{hudNode?.field} <i /> {flightTelemetry.distance} 光程</p>
+        </aside> : null}
+        {immersiveFlight ? <nav className="cockpit-actions" aria-label="飞行界面">
+          <button type="button" aria-pressed={mapToolsOpen} aria-keyshortcuts="M" onClick={() => setMapToolsOpen((open) => !open)}><kbd>M</kbd>{mapToolsOpen ? "收起结构" : "知识结构"}</button>
+          <button type="button" aria-pressed={soundEnabled} onClick={() => { const next = !soundEnabled; setSoundEnabled(next); window.dispatchEvent(new CustomEvent("spark-flight-audio", { detail: { enabled: next } })); }}>{soundEnabled ? "静音" : "开启声音"}</button>
+          <button type="button" onClick={() => setArchiveOpen(true)}>航行日志</button>
+        </nav> : null}
+        {voyageRun === 1 && voyagePhase === "cruise" && flightTelemetry.samples === 0 ? <div className="flight-coach" role="status"><kbd>WASD</kbd><span><b>亲自掌舵</b>朝目标箭头推进；偏离直线去捕获第一枚金色样本</span></div> : null}
         <nav className="sky-index" aria-label="知识星域">
           <button className={activeSector === "all" ? "active" : ""} type="button" aria-pressed={activeSector === "all"} onClick={() => chooseSector("all")}>全图 <sup>{fieldCount}/100</sup></button>
           {SECTORS.map((sector) => { const count = atlas.nodes.filter((node) => node.id !== "origin" && sectorFor(node) === sector.key).length; return <button key={sector.key} className={activeSector === sector.key ? "active" : ""} type="button" aria-pressed={activeSector === sector.key} onClick={() => chooseSector(sector.key)}>{sector.label}<sup>{count}</sup></button>; })}
@@ -759,11 +791,18 @@ export function CuriosityGame() {
         <div className="map-legend" aria-live="polite"><strong>{activeLens ? `${activeLens.label} · ${activeLens.ability}` : "全结构 · 从观测到世界模型"}</strong><span><i />已走过</span><span><i />可探索</span><span><i />跨领域线</span><span><i />解释面</span></div>
 
         <aside className="flight-dock" aria-label="星图航行控制">
-          <header><small>{voyageLabel}</small><span className="desktop-hint">WASD 驾驶 · Shift 加速</span><button className="question-toggle" type="button" onClick={() => setQuestionOpen((open) => !open)}>{questionOpen ? "收起问题" : "投下问题"}</button></header>
+          <header><small>{voyageLabel}</small><span className="desktop-hint">WASD 驾驶 · Shift 推进 · Space 探测</span><button className="question-toggle" type="button" onClick={() => setQuestionOpen((open) => !open)}>{questionOpen ? "收起问题" : "投下问题"}</button></header>
           <div className="flight-target" aria-live="polite"><i style={{ "--star-color": hudNode ? sectorInfo(sectorFor(hudNode)).color : undefined } as CSSProperties} aria-hidden="true" /><p><b>{hudNode?.name || "等待星图"}</b><span>{hudNode?.field || ""}</span></p></div>
-          <div className="flight-instruments" aria-label="飞船仪表"><span><small>航速</small><b>{flightTelemetry.speed}</b></span><span><small>信号</small><b>{flightTelemetry.signal}%</b></span><span><small>样本</small><b>{flightTelemetry.samples}/4</b></span><i><b style={{ width: `${flightTelemetry.signal}%` }} /></i></div>
+          <div className="flight-instruments" aria-label="飞船仪表">
+            <span><small>航速</small><b>{flightTelemetry.speed}</b></span>
+            <span><small>信号</small><b>{flightTelemetry.signal}%</b></span>
+            <span><small>推进能量</small><b>{flightTelemetry.energy}%</b></span>
+            <span><small>船体</small><b>{flightTelemetry.integrity}%</b></span>
+            <i className="signal-meter"><b style={{ width: `${flightTelemetry.signal}%` }} /></i>
+          </div>
+          {immersiveFlight ? <div className="flight-achievements" aria-live="polite"><span>样本 <b>{flightTelemetry.samples}</b></span><span>锁定 <b>{flightTelemetry.locks}/3</b></span><strong>{flightTelemetry.combo > 1 ? `连续发现 ×${flightTelemetry.combo}` : flightStyleName}</strong><em>{voyagePhase === "scanning" ? "对准扫描窗" : "驾驶风格会决定 AI 下一跳的跨度"}</em></div> : null}
           <p className="route-reason">{voyageInstruction}</p>
-          <footer>{activeSector !== "all" ? <button className="back-action" type="button" onClick={() => chooseSector("all")}>返回全图</button> : <span className="swipe-hint">拖动空域驾驶 · Space 探测</span>}{voyagePhase === "idle" && dockNode && dockNode.id !== "origin" ? <button className="primary-flight" type="button" onClick={() => beginVoyage(dockNode)}>驶向此处<kbd>↗</kbd></button> : <span className="flight-live"><i />{voyagePhase === "cruise" ? `已捕获 ${flightTelemetry.samples} 个信标` : voyagePhase === "scanning" ? `${flightTelemetry.probes} 枚探针已发射` : voyagePhase === "ready" ? "准备进入" : "引擎待命"}</span>}</footer>
+          <footer>{activeSector !== "all" && !immersiveFlight ? <button className="back-action" type="button" onClick={() => chooseSector("all")}>返回全图</button> : <span className="swipe-hint">{immersiveFlight ? "金色六边形是样本 · 青色引力环是风险" : "拖动空域驾驶 · Space 探测"}</span>}{voyagePhase === "idle" && dockNode && dockNode.id !== "origin" ? <button className="primary-flight" type="button" onClick={() => beginVoyage(dockNode)}>驶向此处<kbd>↗</kbd></button> : <span className="flight-live"><i />{voyagePhase === "cruise" ? `航线由你的驾驶实时改写` : voyagePhase === "scanning" ? `${flightTelemetry.locks}/3 次扫描锁定` : voyagePhase === "ready" ? "准备进入" : "引擎待命"}</span>}</footer>
         </aside>
 
         <form className={`question-entry ${questionOpen ? "open" : ""}`} onSubmit={(event) => { event.preventDefault(); chartThought(); }}><label htmlFor="new-question">把一个真实困惑变成知识入口</label><input ref={questionRef} id="new-question" name="new-question" autoComplete="off" placeholder="例如：为什么熟悉的路回程总显得更短…" maxLength={100} disabled={charting} /><button type="submit" disabled={charting}>{charting ? "正在寻找坐标…" : "收入夜空"}</button></form>

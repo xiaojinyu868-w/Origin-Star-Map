@@ -23,7 +23,7 @@ type AtlasRequest = {
   profile_signals?: string[];
   existing_names?: string[];
   faces?: Array<{ name: string; line: string; motif: string }>;
-  flight?: { signal?: number; samples?: number; probes?: number };
+  flight?: { signal?: number; samples?: number; probes?: number; locks?: number; combo?: number; integrity?: number };
 };
 
 type EncounterState = {
@@ -393,8 +393,21 @@ export async function POST(request: Request) {
       const state = await unseal(body.token, sceneModel.apiKey);
       if (!state) return NextResponse.json({ error: "这次观测已经褪色" }, { status: 400 });
       const graded = gradeEncounter(state, body);
-      const flight = { signal: Math.max(0, Math.min(100, Number(body.flight?.signal) || 0)), samples: Math.max(0, Math.min(4, Number(body.flight?.samples) || 0)), probes: Math.max(0, Math.min(20, Number(body.flight?.probes) || 0)) };
-      const flightStyle = flight.samples >= 3 ? "主动偏航采样：wild航线应更大胆地跨到远领域" : flight.probes >= 2 ? "远距探测：bridge航线应从相邻可见现象建立连接" : "直达航行：deeper航线应提供最容易继续追问的台阶";
+      const flight = {
+        signal: Math.max(0, Math.min(100, Number(body.flight?.signal) || 0)),
+        samples: Math.max(0, Math.min(8, Number(body.flight?.samples) || 0)),
+        probes: Math.max(0, Math.min(20, Number(body.flight?.probes) || 0)),
+        locks: Math.max(0, Math.min(3, Number(body.flight?.locks) || 0)),
+        combo: Math.max(0, Math.min(9, Number(body.flight?.combo) || 0)),
+        integrity: Math.max(0, Math.min(100, Number(body.flight?.integrity) || 0)),
+      };
+      const flightStyle = flight.samples >= 3 && flight.integrity >= 70
+        ? "主动偏航且保持船体完整：wild航线应大胆跨到遥远领域"
+        : flight.locks >= 2
+          ? "精确扫描：bridge航线应寻找两个领域之间形状相似但答案不同的关系"
+          : flight.probes >= 2
+            ? "远距探测：bridge航线应从相邻可见现象建立连接"
+            : "直达航行：deeper航线应提供最容易继续追问的台阶";
       const result = await callModel(
         knowledgeModel,
         `你是《星火档案》的知识编辑。根据固定判定完成一页让陌生人真正学会东西的微型百科。
@@ -407,7 +420,7 @@ export async function POST(request: Request) {
 事实锚点：${state.source_anchor}
 边界：${state.caveat}
 已经走过的领域：${JSON.stringify(state.map_fields)}
-本次飞行记录：信号${flight.signal}/100，捕获${flight.samples}/4个样本，发射${flight.probes}枚探针。
+本次飞行记录：信号${flight.signal}/100，捕获${flight.samples}个样本，扫描锁定${flight.locks}/3，最高连续发现${flight.combo}，船体完整度${flight.integrity}/100，发射${flight.probes}枚探针。
 航行风格：${flightStyle}
 
 知识编辑纪律：
@@ -466,7 +479,7 @@ export async function POST(request: Request) {
         transfer: String(result.transfer).slice(0, 110),
         spark: { title: String(spark.title).slice(0, 24), field: String(spark.field || state.node.field).slice(0, 30), insight: String(spark.insight).slice(0, 48) },
         profile_signal: String(result.profile_signal || "喜欢从微小差异追踪变化").slice(0, 50),
-        flight_note: String(result.flight_note || (flight.samples >= 3 ? "你捕获了更多样本，远行航线因此跨得更远。" : "你选择直达，下一跳会先从当前问题继续深挖。")).slice(0, 60),
+        flight_note: String(result.flight_note || (flight.locks >= 2 ? "你完成了精密扫描，下一跳会寻找跨领域的相似结构。" : flight.samples >= 3 ? "你捕获了更多样本，远行航线因此跨得更远。" : flight.integrity < 70 ? "你冒险穿过引力井，下一跳会保留这种高风险跨度。" : "你选择直达，下一跳会先从当前问题继续深挖。")).slice(0, 60),
         source_note: `${state.source_anchor} · ${state.caveat}`.slice(0, 90),
         next_nodes: nextNodes.map((item, index) => {
           const node = item as Record<string, unknown>;
