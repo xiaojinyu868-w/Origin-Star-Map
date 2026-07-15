@@ -48,6 +48,10 @@ test("keeps DashScope behind the server-side atlas API", async () => {
   assert.match(api, /visual_context/);
   assert.match(api, /artifact_html/);
   assert.match(api, /normalizeArtifact/);
+  assert.match(api, /world_outcomes/);
+  assert.match(api, /AI_SCENE_MODEL/);
+  assert.match(api, /WebGL\/WebGL2/);
+  assert.match(api, /code-to-video/);
   assert.match(api, /spark-atlas-artifact/);
   assert.match(api, /qwen3\.7-plus/);
   assert.match(game, /ObservationInstrument/);
@@ -55,6 +59,9 @@ test("keeps DashScope behind the server-side atlas API", async () => {
   assert.match(game, /KnowledgeVolume/);
   assert.match(game, /knowledge-face/);
   assert.match(game, /GeneratedWorld/);
+  assert.match(game, /SparkRuntime/);
+  assert.match(game, /spark-atlas-runtime/);
+  assert.match(game, /media-src data: blob:/);
   assert.match(game, /sandbox="allow-scripts"/);
   assert.match(game, /receiveArtifactAction/);
   assert.doesNotMatch(game, /DASHSCOPE_API_KEY|sk-[a-zA-Z0-9]/);

@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 
 type SectorKey = "life" | "mind" | "society" | "matter" | "creation" | "systems";
 type Verdict = "hit" | "near" | "twist";
-type Interaction = "choice" | "scale" | "arrange";
+type Interaction = "world" | "choice" | "scale" | "arrange";
 type ChoiceVisual = { value: number; uncertainty: number; annotation: string };
 type VisualContext = { measure: string; unit: string; baseline_label: string; changed_label: string; baseline_value: number };
-type GeneratedArtifact = { medium: "svg" | "html" | "canvas"; html: string; title: string; hint: string; can_commit: boolean };
+type WorldOutcome = { id: string; label: string; verdict: Verdict };
+type GeneratedArtifact = { medium: string; html: string; title: string; hint: string; verb: string; duration_seconds: number; accent: string; focus: string; can_commit: boolean };
 
 type AtlasNode = { id?: string; name: string; field: string; hook: string; sector?: SectorKey };
 type AtlasRequest = {
@@ -13,6 +14,7 @@ type AtlasRequest = {
   node?: AtlasNode;
   map?: { discovered?: string[]; frontier?: string[]; fields?: string[] };
   answer?: string;
+  outcome?: string;
   value?: number;
   order?: string[];
   thought?: string;
@@ -28,6 +30,7 @@ type EncounterState = {
   signal: string;
   question: string;
   interaction: Interaction;
+  outcomes: WorldOutcome[];
   choices: string[];
   choice_verdicts: Verdict[];
   choice_visuals: ChoiceVisual[];
@@ -46,6 +49,25 @@ type EncounterState = {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const sectors: SectorKey[] = ["life", "mind", "society", "matter", "creation", "systems"];
+
+type ModelPurpose = "scene" | "knowledge";
+type ModelConfig = { apiKey: string; endpoint: string; model: string; jsonMode: boolean; maxTokens: number; timeoutMs: number };
+
+function modelConfig(purpose: ModelPurpose): ModelConfig | null {
+  const apiKey = process.env.AI_API_KEY || process.env.DASHSCOPE_API_KEY;
+  if (!apiKey) return null;
+  const base = (process.env.AI_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions").replace(/\/+$/, "");
+  const endpoint = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
+  const model = (purpose === "scene" ? process.env.AI_SCENE_MODEL : process.env.AI_KNOWLEDGE_MODEL) || process.env.AI_MODEL || process.env.DASHSCOPE_MODEL || "qwen3.7-plus";
+  return {
+    apiKey,
+    endpoint,
+    model,
+    jsonMode: process.env.AI_DISABLE_JSON_MODE !== "1",
+    maxTokens: Math.max(4096, Math.min(32000, Number(process.env.AI_MAX_OUTPUT_TOKENS) || 12000)),
+    timeoutMs: Math.max(15000, Math.min(120000, Number(process.env.AI_TIMEOUT_MS) || 60000)),
+  };
+}
 
 function toBase64Url(bytes: Uint8Array) {
   let binary = "";
@@ -77,24 +99,24 @@ async function unseal(token: string, secret: string): Promise<EncounterState | n
   try { return JSON.parse(decoder.decode(fromBase64Url(payload))) as EncounterState; } catch { return null; }
 }
 
-async function callQwen(apiKey: string, system: string, user: string, temperature = 0.72) {
+async function callModel(config: ModelConfig, system: string, user: string, temperature = 0.72) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 45000);
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
-    const response = await fetch("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", {
+    const response = await fetch(config.endpoint, {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: process.env.DASHSCOPE_MODEL || "qwen3.7-plus",
+        model: config.model,
         messages: [{ role: "system", content: system }, { role: "user", content: user }],
-        response_format: { type: "json_object" },
+        ...(config.jsonMode ? { response_format: { type: "json_object" } } : {}),
         enable_thinking: false,
-        max_tokens: 12000,
+        max_tokens: config.maxTokens,
         temperature,
       }),
       signal: controller.signal,
     });
-    if (!response.ok) throw new Error(`DashScope ${response.status}`);
+    if (!response.ok) throw new Error(`Model provider ${response.status}`);
     const completion = await response.json();
     const content = completion?.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("Missing output");
@@ -104,7 +126,8 @@ async function callQwen(apiKey: string, system: string, user: string, temperatur
 
 function normalizeArtifact(result: Record<string, unknown>): GeneratedArtifact | null {
   const raw = String(result.artifact_html || "").trim();
-  if (raw.length < 120 || raw.length > 26000 || !/<(?:svg|canvas|div|section|main)\b/i.test(raw)) return null;
+  const maxSceneChars = Math.max(26000, Math.min(120000, Number(process.env.AI_MAX_SCENE_CHARS) || 60000));
+  if (raw.length < 120 || raw.length > maxSceneChars || !/<(?:svg|canvas|div|section|main)\b/i.test(raw)) return null;
   const html = raw
     .replace(/```(?:html|svg|javascript|js|css)?/gi, "")
     .replace(/```/g, "")
@@ -114,18 +137,65 @@ function normalizeArtifact(result: Record<string, unknown>): GeneratedArtifact |
     .replace(/\b(?:href|src)\s*=\s*["'](?:https?:|\/\/)[^"']*["']/gi, "")
     .trim();
   if (html.length < 120) return null;
-  const proposed = String(result.artifact_medium || "").toLowerCase();
-  const medium: GeneratedArtifact["medium"] = proposed === "canvas" || proposed === "html" || proposed === "svg" ? proposed : /<canvas\b/i.test(html) ? "canvas" : /<svg\b/i.test(html) ? "svg" : "html";
+  const proposed = String(result.artifact_medium || "").toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 18);
+  const medium = proposed || (/webgl|getContext\s*\(\s*["']webgl/i.test(html) ? "webgl" : /<canvas\b/i.test(html) ? "canvas" : /<svg\b/i.test(html) ? "svg" : "html");
+  const rawAccent = String(result.artifact_accent || "");
   return {
     medium,
     html,
     title: String(result.artifact_title || "为这次问题生成的可操作世界").slice(0, 36),
     hint: String(result.artifact_hint || "先操作画面，再留下你的判断").slice(0, 80),
-    can_commit: html.includes("spark-atlas-artifact"),
+    verb: String(result.artifact_verb || "动手试试").slice(0, 10),
+    duration_seconds: Math.max(8, Math.min(90, Number(result.artifact_duration_seconds) || 30)),
+    accent: /^#[0-9a-f]{6}$/i.test(rawAccent) ? rawAccent : "#7fa6a0",
+    focus: String(result.artifact_focus || "").slice(0, 10),
+    can_commit: html.includes("SparkRuntime.commit") || html.includes("spark-atlas-artifact"),
   };
 }
 
+function sceneIsPlayable(artifact: GeneratedArtifact | null) {
+  if (!artifact) return false;
+  const interactive = /addEventListener\s*\(|\bon(?:click|pointer|mouse|touch|input|change|key)/i.test(artifact.html);
+  const kinetic = /requestAnimationFrame\s*\(|@keyframes\b|\.animate\s*\(|<animate\b|transition\s*:/i.test(artifact.html);
+  const visibleText = artifact.html.replace(/<(?:script|style)\b[\s\S]*?<\/(?:script|style)>/gi, "").replace(/<[^>]+>/g, "").replace(/\s+/g, "").trim();
+  return interactive && kinetic && visibleText.length <= 650;
+}
+
+function focusMatchesNode(result: Record<string, unknown>, node: AtlasNode) {
+  const focus = String(result.artifact_focus || "").trim();
+  if (focus.length < 2 || focus.length > 10 || /^(两个|两列|相近|忽大|忽小|忽大忽小|越大|越省|翻倍|怎样|为何|为什么|制造|听见|估量|改变|调节|控制|选择|移动|拖动|观察|变化|关系|结果|影响|世界|现象|过程|系统)$/.test(focus)) return false;
+  const source = `${node.name} ${node.hook}`;
+  return source.includes(focus);
+}
+
+function sceneMatchesNode(result: Record<string, unknown>, node: AtlasNode, artifact: GeneratedArtifact | null) {
+  if (!focusMatchesNode(result, node)) return false;
+  const focus = String(result.artifact_focus || "").trim();
+  const prompt = `${String(result.signal || "")} ${String(result.question || "")}`;
+  const scene = `${artifact?.title || ""} ${artifact?.html || ""}`;
+  return prompt.includes(focus) && scene.includes(focus);
+}
+
+async function createBlueprint(config: ModelConfig, node: AtlasNode, mapFields: string[], correction = "") {
+  return callModel(
+    config,
+    `你是知识游戏的事实设计师。先只设计一次可靠、有动作的观测蓝图，不写任何前端代码。
+- 唯一主题是档案hook承诺的现象，结束后必须能直接回答它；不得换成同学科的相邻知识。
+- 面向第一次接触该领域的高中毕业生。signal只给一个可想象现场；question要求玩家改变一个变量或完成一个动作，不考术语。
+- interaction固定为world。设计三个由玩家真实操作导致的结果，id固定o1、o2、o3，verdict恰好使用hit、near、twist各一次。
+- artifact_focus必须从name或hook原样复制一个2至10字的领域名词。禁用：两个、两列、相近、忽大忽小、越大、越省、翻倍、制造、听见、估量、改变、调节、控制、选择、移动、拖动、观察、变化、关系、结果、影响、世界、现象、过程、系统。
+- 事实必须可靠；concept与explanation说明正确关系，source_anchor给出可核对的规律、实验或效应，caveat说明边界。
+输出JSON：{"signal":"22至42字","question":"10至24字的动作问题","interaction":"world","world_outcomes":[{"id":"o1","label":"5至16字的具体行动结果","verdict":"hit"}],"artifact_focus":"具体领域名词","concept":"真实概念","explanation":"35至65字","source_anchor":"事实锚点","caveat":"12至30字"}`,
+    `唯一主题档案：${JSON.stringify(node)}\n已经走过的领域：${JSON.stringify(mapFields)}${correction ? `\n上次错误：${correction}。这次必须改正。` : ""}`,
+    correction ? 0.35 : 0.55,
+  );
+}
+
 function gradeEncounter(state: EncounterState, body: AtlasRequest): { verdict: Verdict; answer: string } {
+  if (state.interaction === "world") {
+    const outcome = state.outcomes.find((item) => item.id === String(body.outcome || ""));
+    return outcome ? { verdict: outcome.verdict, answer: outcome.label } : { verdict: "near", answer: "完成了一次观测" };
+  }
   if (state.interaction === "scale" && state.scale) {
     const value = Math.max(0, Math.min(100, Number(body.value ?? 50)));
     const distance = Math.abs(value - state.scale.target);
@@ -143,12 +213,13 @@ function gradeEncounter(state: EncounterState, body: AtlasRequest): { verdict: V
 }
 
 export async function GET() {
-  return NextResponse.json({ connected: Boolean(process.env.DASHSCOPE_API_KEY) });
+  return NextResponse.json({ connected: Boolean(modelConfig("scene")) });
 }
 
 export async function POST(request: Request) {
-  const apiKey = process.env.DASHSCOPE_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: "制图台尚未连接" }, { status: 503 });
+  const sceneModel = modelConfig("scene");
+  const knowledgeModel = modelConfig("knowledge");
+  if (!sceneModel || !knowledgeModel) return NextResponse.json({ error: "制图台尚未连接" }, { status: 503 });
   let body: AtlasRequest;
   try { body = (await request.json()) as AtlasRequest; } catch { return NextResponse.json({ error: "这页档案无法辨认" }, { status: 400 }); }
 
@@ -156,11 +227,15 @@ export async function POST(request: Request) {
     if (body.mode === "encounter") {
       if (!body.node?.name || !body.node.field || !body.node.hook) return NextResponse.json({ error: "观测坐标不完整" }, { status: 400 });
       const mapFields = body.map?.fields?.slice(0, 24) || [];
-      const result = await callQwen(
-        apiKey,
+      let blueprint = await createBlueprint(knowledgeModel, body.node, mapFields);
+      if (!focusMatchesNode(blueprint, body.node)) blueprint = await createBlueprint(knowledgeModel, body.node, mapFields, "artifact_focus不是档案里的具体领域名词");
+      if (!blueprint.signal || !blueprint.question || !blueprint.concept || !blueprint.explanation || !blueprint.source_anchor || !blueprint.caveat || !Array.isArray(blueprint.world_outcomes) || !focusMatchesNode(blueprint, body.node)) throw new Error("Blueprint incomplete");
+      let generated = await callModel(
+        sceneModel,
         `你是《星火档案》的无名策展人。这里不是课堂、问答产品或科幻控制台，而是一座安静的夜间天文档案馆。你要从真实知识中挑出一个值得亲手触碰的瞬间。
 
-为指定档案生成一次20至40秒的“观测”。可选三种动作：
+为指定档案生成一次20至40秒的“观测”。优先使用world：它是一段真正能玩的微型代码世界，玩法完全由知识本身决定。choice、scale、arrange只作为生成代码确实无法表达时的兼容方案：
+- world：玩家可以追逐、搭建、拖拽、控制、寻找、调参、演奏、模拟、穿越或做任何更适合本题的动作。world_outcomes定义三个可能结束状态，只用于安全判定，不限制中间玩法。
 - choice：适合比较三种具体结果。
 - scale：适合估计连续变化、比例、强弱或位置。left/right必须是两个有意义的极端，target为0至100的答案。
 - arrange：适合排列三个事件、尺度或因果阶段。items是展示顺序打乱的三个短语，target_order是真实顺序。
@@ -176,12 +251,15 @@ export async function POST(request: Request) {
 - visual_context中的measure、baseline_label、changed_label也必须使用普通人一眼能懂的可见量，例如“两边次数有多接近”，不能使用“吻合度、效应强度、综合指数”这类没有直观含义的自造指标。
 - baseline_value与三个value都使用0至100的共享绘图刻度。请挑选baseline_value，使三种假设的相对高低都能看清。它们不是伪造的百分比；真实倍数、百分比或范围必须写进annotation。
 - uncertainty只表示选项本身声称的波动或不确定范围；没有范围含义时填0。三个value与annotation必须忠实对应三个choices，不能随机装饰。
-- 除了用于判定的结构化字段，还要为本题编写一个全新的“代码世界”。它不是装饰图，也不受固定图表类型限制：根据知识本身选择HTML、CSS、内联SVG或Canvas，可以表现轨道、流体、生态网络、机械结构、声音、空间、尺度、群体运动、历史过程或任何更合适的形式。
-- artifact_html是可直接插入body的自包含代码片段。它必须在宽度720、高度320左右的区域内自适应，直接帮助玩家观察本题现象；允许使用内联style和少量原生JavaScript来提供拖动、点击、悬停、滑杆或时间演化。
+- 除了用于判定的字段，还要为本题编写一个全新的“代码世界”。它不是装饰图，也不受固定图表类型限制。可以自由组合HTML、CSS、内联SVG、Canvas 2D、WebGL/WebGL2、CSS 3D、Web Animations API、Web Audio与浏览器原生JavaScript；也可以像code-to-video一样实时绘制镜头、转场、字幕、时间演化和可操作动画。
+- artifact_html是可直接插入body的自包含代码片段。它必须在宽度900、高度500左右的区域内自适应并占据主要画面；允许拖动、点击、悬停、滑杆、键盘、触摸、多阶段任务、物理近似、实时动画和用户手势后合成的轻量声音。
 - 不要套用“折线图/三个卡片/圆点连线”的固定模板，也不要为了炫技堆粒子。先问：这个知识如果真的能动起来，玩家最该亲手改变哪个变量、看到哪个因果？
-- 代码内只用HTML、CSS、SVG、Canvas和原生JavaScript；禁止外链、fetch、WebSocket、localStorage、eval、表单、iframe、音视频、第三方库和无限循环。requestAnimationFrame必须有轻量更新，事件监听不超过8个。
+- 代码内只用浏览器原生能力；禁止外链、fetch、WebSocket、localStorage、eval、表单、iframe、外部音视频、第三方库和无限循环。可以用Canvas/WebGL逐帧生成动画，也可以将Canvas流送入无外部源的video元素。requestAnimationFrame必须轻量，并在页面不可见时停止重计算。
 - artifact_html不包含html、head、body标签，不使用Markdown代码围栏。中文标注不得小于14px，关键对象必须有可见名称；不能提前泄露正确答案，只展示可供判断的证据或三种假设。
-- 代码世界可以用任何交互过程，但完成判断时必须通过安全桥提交结果：choice发送window.parent.postMessage({source:'spark-atlas-artifact',type:'commit',answer:'必须与choices某一项完全相同'},'*')；scale发送同结构并把answer改为value:0至100；arrange发送order数组，元素必须来自items。artifact_html必须包含精确字符串spark-atlas-artifact；提交前必须让玩家主动操作，不能加载后自动发送。
+- 运行时会预先提供window.SparkRuntime。代码可在加载后调用SparkRuntime.ready()；过程中调用SparkRuntime.progress(0至100)与SparkRuntime.pulse()提供进度和触觉反馈；完成时调用SparkRuntime.commit(payload)。world发送{outcome:'o1/o2/o3'}；choice发送{answer:'必须与choices某一项完全相同'}；scale发送{value:0至100}；arrange发送{order:[来自items的三项]}。artifact_html必须包含精确字符串SparkRuntime.commit；提交前必须让玩家主动操作，不能加载后自动发送。
+- 游戏必须在10秒内让第一次接触该领域的人明白“我能动什么”，在40秒内产生一个结果。首屏只保留一个极短动作提示；不要把说明书、知识解释或答案写进场景。
+- 对world生成world_outcomes三个状态，id固定为o1、o2、o3，label是玩家完成后能复述的具体行动结果，verdict分别恰好使用hit、near、twist一次。代码必须根据玩家真正做出的结果提交对应id，不能用随机数代替。
+- 从档案name或hook原样复制一个2至10字的具体名词作为artifact_focus。signal、question以及代码世界可见内容都必须出现这个词。不能用“变化、关系、结果、影响、世界、现象、过程、系统”充当锚点。这是服务端硬校验；换题、只做同学科的相邻主题或遗漏锚点都会整次作废。
 - 必须来自可重复实验、稳定规律或明确机制，并保留事实锚点与边界。
 - 不把相关写成因果，不把假说写成定论；有争议就换一个更可靠的现象。
 - 禁用模型腔与宣传腔：显著、赋能、重塑、深层、揭示、背后逻辑、系统性、颠覆、神奇、竟然。
@@ -191,7 +269,8 @@ export async function POST(request: Request) {
 {
   "signal":"22至42字，只有一个画面",
   "question":"10至24字",
-  "interaction":"choice或scale或arrange",
+  "interaction":"优先world；也可choice、scale或arrange",
+  "world_outcomes":[{"id":"o1","label":"5至16字的具体结果","verdict":"hit、near、twist各一次"}],
   "choices":["仅choice填写3项，每项5至16字"],
   "choice_verdicts":["仅choice填写，与选项对应，hit、near、twist各一次"],
   "visual_context":{"measure":"仅choice填写，纵轴正在测量什么，2至10字","unit":"真实单位；没有可靠绝对数值就写相对尺度","baseline_label":"变化前的具体条件，2至10字","changed_label":"变化后的具体条件，2至10字","baseline_value":"0至100整数"},
@@ -200,20 +279,46 @@ export async function POST(request: Request) {
   "items":["仅arrange填写3项，每项3至10字"],
   "target_order":["仅arrange填写真实顺序"],
   "visual":"pulse、orbit、split、network、scale五选一",
-  "artifact_medium":"svg、html或canvas",
+  "artifact_medium":"自由描述主要呈现技术，如svg、canvas、webgl、css-3d、motion或hybrid",
   "artifact_title":"6至18字，说明这个可操作世界是什么",
-  "artifact_hint":"12至32字，告诉玩家可以怎样操作或观察",
-  "artifact_html":"自包含的HTML/CSS/SVG/Canvas代码片段，必须JSON转义",
+  "artifact_hint":"6至18字，只用一个动词告诉玩家第一步",
+  "artifact_verb":"2至6字的核心动作，如拖动、捕捉、保持平衡",
+  "artifact_duration_seconds":"预计游玩秒数，8至90",
+  "artifact_accent":"与知识世界匹配的六位十六进制颜色",
+  "artifact_focus":"从档案name或hook原样复制的具体名词",
+  "artifact_html":"自包含的开放式前端代码片段，必须JSON转义",
   "concept":"真实概念",
   "explanation":"35至65字，准确解释结果",
   "source_anchor":"实验、效应或规律名称",
   "caveat":"12至30字，说明不能推出什么"
 }`,
-        `档案：${JSON.stringify(body.node)}\n已经走过的领域：${JSON.stringify(mapFields)}`,
+        `唯一允许的主题档案：${JSON.stringify(body.node)}\n权威观测蓝图（所有同名字段必须逐字复制，不得改题）：${JSON.stringify(blueprint)}\n已经走过的领域：${JSON.stringify(mapFields)}\n硬约束：不得换题。代码世界必须让玩家亲手检验蓝图与hook承诺的同一个现象。`,
         0.76,
       );
+      const draft = { ...generated, ...blueprint, interaction: "world" };
+      const draftArtifact = normalizeArtifact(draft);
+      if (!draftArtifact?.can_commit || !sceneMatchesNode(draft, body.node, draftArtifact)) {
+        const repaired = await callModel(
+          sceneModel,
+          `你是浏览器原生游戏代码的修复者。只修复一个已经设计好的知识场景，不改题、不改观测蓝图。
+- 输出完整、自包含的artifact_html以及artifact_medium、artifact_title、artifact_hint、artifact_verb、artifact_duration_seconds、artifact_accent。
+- 代码必须把artifact_focus直接显示在画面中，并真正表现蓝图描述的现象。
+- 保留或增强原有交互与动画。玩家完成动作后，必须根据真实结果调用SparkRuntime.commit({outcome:'o1'})、o2或o3；不得自动提交或随机提交。
+- 可以使用HTML、CSS、SVG、Canvas 2D、WebGL、Web Audio、CSS 3D、Web Animations和逐帧代码动画，不用外链、fetch、第三方库、iframe或localStorage。
+- 只输出JSON，不写Markdown。`,
+          `档案：${JSON.stringify(body.node)}\n不可修改的蓝图：${JSON.stringify(blueprint)}\n待修复场景：${JSON.stringify(generated)}`,
+          0.42,
+        );
+        generated = { ...generated, ...repaired };
+      }
+      const result = { ...generated, ...blueprint, interaction: "world" };
 
-      const interaction = ["choice", "scale", "arrange"].includes(String(result.interaction)) ? String(result.interaction) as Interaction : "choice";
+      const interaction = ["world", "choice", "scale", "arrange"].includes(String(result.interaction)) ? String(result.interaction) as Interaction : "world";
+      const rawOutcomes = Array.isArray(result.world_outcomes) ? result.world_outcomes.slice(0, 3) : [];
+      const outcomes: WorldOutcome[] = rawOutcomes.map((item, index) => {
+        const entry = item as Record<string, unknown>;
+        return { id: `o${index + 1}`, label: String(entry.label || `结果${index + 1}`).slice(0, 20), verdict: ["hit", "near", "twist"].includes(String(entry.verdict)) ? String(entry.verdict) as Verdict : (["hit", "near", "twist"] as Verdict[])[index] };
+      });
       const choices = Array.isArray(result.choices) ? result.choices.slice(0, 3).map((item) => String(item).slice(0, 20)) : [];
       const verdicts = Array.isArray(result.choice_verdicts) ? result.choice_verdicts.slice(0, 3).map(String) as Verdict[] : [];
       const rawChoiceVisuals = Array.isArray(result.choice_visuals) ? result.choice_visuals.slice(0, 3) : [];
@@ -237,15 +342,22 @@ export async function POST(request: Request) {
       const scale = rawScale ? { left: String(rawScale.left || "更少").slice(0, 8), right: String(rawScale.right || "更多").slice(0, 8), target: Math.max(0, Math.min(100, Number(rawScale.target || 50))), tolerance: Math.max(8, Math.min(18, Number(rawScale.tolerance || 12))) } : null;
       const items = Array.isArray(result.items) ? result.items.slice(0, 3).map((item) => String(item).slice(0, 14)) : [];
       const targetOrder = Array.isArray(result.target_order) ? result.target_order.slice(0, 3).map((item) => String(item).slice(0, 14)) : [];
-      const validMechanic = interaction === "choice" ? choices.length === 3 && ["hit", "near", "twist"].every((grade) => verdicts.includes(grade)) : interaction === "scale" ? Boolean(scale) : items.length === 3 && targetOrder.length === 3;
-      if (!result.signal || !result.question || !result.concept || !result.explanation || !result.source_anchor || !result.caveat || !validMechanic) throw new Error("Encounter incomplete");
       const artifact = normalizeArtifact(result);
+      const worldChecks = { outcomes: outcomes.length === 3 && ["hit", "near", "twist"].every((grade) => outcomes.some((item) => item.verdict === grade)), commit: Boolean(artifact?.can_commit), topic: sceneMatchesNode(result, body.node, artifact), playable: sceneIsPlayable(artifact) };
+      if (artifact && !worldChecks.topic) {
+        const focus = String(result.artifact_focus || "本题");
+        artifact.title = `${focus} · ${artifact.title}`.slice(0, 36);
+        artifact.hint = `${focus}：${artifact.hint}`.slice(0, 80);
+      }
+      const validMechanic = interaction === "world" ? worldChecks.outcomes && Boolean(artifact) && worldChecks.playable : interaction === "choice" ? choices.length === 3 && ["hit", "near", "twist"].every((grade) => verdicts.includes(grade)) : interaction === "scale" ? Boolean(scale) : items.length === 3 && targetOrder.length === 3;
+      if (!result.signal || !result.question || !result.concept || !result.explanation || !result.source_anchor || !result.caveat || !validMechanic) throw new Error(`Encounter incomplete:${JSON.stringify(worldChecks)}`);
 
       const state: EncounterState = {
         node: body.node,
         signal: String(result.signal).slice(0, 52),
         question: String(result.question).slice(0, 30),
         interaction,
+        outcomes,
         choices,
         choice_verdicts: verdicts,
         choice_visuals: choiceVisuals,
@@ -260,16 +372,16 @@ export async function POST(request: Request) {
         caveat: String(result.caveat),
         map_fields: mapFields,
       };
-      return NextResponse.json({ signal: state.signal, question: state.question, interaction: state.interaction, choices: state.choices, choice_visuals: state.choice_visuals, visual_context: state.visual_context, scale: state.scale ? { left: state.scale.left, right: state.scale.right } : null, items: state.items, visual: state.visual, artifact, token: await seal(state, apiKey) });
+      return NextResponse.json({ signal: state.signal, question: state.question, interaction: state.interaction, outcomes: state.outcomes.map(({ id, label }) => ({ id, label })), choices: state.choices, choice_visuals: state.choice_visuals, visual_context: state.visual_context, scale: state.scale ? { left: state.scale.left, right: state.scale.right } : null, items: state.items, visual: state.visual, artifact, token: await seal(state, sceneModel.apiKey) });
     }
 
     if (body.mode === "resolve") {
       if (!body.token) return NextResponse.json({ error: "观测尚未完成" }, { status: 400 });
-      const state = await unseal(body.token, apiKey);
+      const state = await unseal(body.token, sceneModel.apiKey);
       if (!state) return NextResponse.json({ error: "这次观测已经褪色" }, { status: 400 });
       const graded = gradeEncounter(state, body);
-      const result = await callQwen(
-        apiKey,
+      const result = await callModel(
+        knowledgeModel,
         `你是《星火档案》的知识编辑。根据固定判定完成一页让陌生人真正学会东西的微型百科。
 观测：${state.signal}
 问题：${state.question}
@@ -347,8 +459,8 @@ export async function POST(request: Request) {
     if (body.mode === "constellation") {
       const recent = body.recent_nodes?.slice(-4) || [];
       if (recent.length < 3) return NextResponse.json({ error: "还没有足够的观测来闭合解释面" }, { status: 400 });
-      const result = await callQwen(
-        apiKey,
+      const result = await callModel(
+        knowledgeModel,
         `你是《星火档案》的知识结构编辑。根据一个人最近走过的3至4个知识标本，把它们闭合成一张“解释面”：三个不同领域共同解释的一类问题。
 - 名称必须具体、含蓄、可记忆，像一件可以拿在手里的认知工具，不是人格测试，不使用“型/者/主义”，不必生硬地以“面”结尾。
 - 名称不得与已经出现的解释面同名或仅有一字之差；优先从这一次独有的动作、物体或矛盾中取名。
@@ -366,8 +478,8 @@ export async function POST(request: Request) {
     if (body.mode === "volume") {
       const faces = body.faces?.slice(-3) || [];
       if (faces.length < 3) return NextResponse.json({ error: "还没有三张解释面来构成世界模型" }, { status: 400 });
-      const result = await callQwen(
-        apiKey,
+      const result = await callModel(
+        knowledgeModel,
         `你是《星火档案》的世界模型编辑。玩家已经拥有三张跨领域解释面。现在找出一条能在三类问题之间迁移的规律，把它命名为一个“世界模型体”。
 - 这不是总结或人格标签。它必须是一件可以拿去分析新问题的思考工具。
 - name要具体、克制、可记忆，4至9字；可以像“反馈回路体”“尺度错位体”，但不要硬凑“体”字，也不要使用宏大科幻词。
@@ -387,8 +499,8 @@ export async function POST(request: Request) {
       const thought = body.thought?.trim().slice(0, 160);
       if (!thought) return NextResponse.json({ error: "先写下一件无法解释的事" }, { status: 400 });
       const knownNodes = [...(body.map?.discovered || []), ...(body.map?.frontier || [])].slice(0, 40);
-      const result = await callQwen(
-        apiKey,
+      const result = await callModel(
+        knowledgeModel,
         `你是《星火档案》的制图员。把一句日常困惑变成一件可观测的知识标本。
 - 不回答原问题，只找到最有解释力且可靠的领域。
 - 名称是具体场景、物件或动作，4至12字；避免“为什么”和课程标题。
@@ -407,6 +519,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "无法识别这项观测" }, { status: 400 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown";
-    return NextResponse.json({ error: message.includes("DashScope") ? "制图台暂时没有回信" : "这页档案没有生成完整，请重试" }, { status: 502 });
+    return NextResponse.json({ error: message.includes("Model provider") ? "制图台暂时没有回信" : "这页档案没有生成完整，请重试" }, { status: 502 });
   }
 }

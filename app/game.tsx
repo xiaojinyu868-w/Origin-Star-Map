@@ -6,7 +6,7 @@ type NodeStatus = "origin" | "frontier" | "discovered";
 type EdgeKind = "normal" | "bridge" | "wild";
 type SectorKey = "life" | "mind" | "society" | "matter" | "creation" | "systems";
 type Verdict = "hit" | "near" | "twist";
-type Interaction = "choice" | "scale" | "arrange";
+type Interaction = "world" | "choice" | "scale" | "arrange";
 type ChoiceVisual = { value: number; uncertainty: number; annotation: string };
 type VisualContext = { measure: string; unit: string; baseline_label: string; changed_label: string; baseline_value: number };
 
@@ -33,8 +33,9 @@ type AtlasEdge = { from: string; to: string; kind: EdgeKind; reason?: string; tr
 type Constellation = { id: string; name: string; line: string; motif: string; nodeIds: string[] };
 type KnowledgeVolume = { id: string; name: string; line: string; law: string; faceIds: string[]; nodeIds: string[] };
 type AtlasState = { version: 7; nodes: AtlasNode[]; edges: AtlasEdge[]; profileSignals: string[]; expeditions: number; constellations: Constellation[]; volumes: KnowledgeVolume[]; trail: string[] };
-type GeneratedArtifact = { medium: "svg" | "html" | "canvas"; html: string; title: string; hint: string; can_commit: boolean };
-type Encounter = { signal: string; question: string; interaction: Interaction; choices: string[]; choice_visuals?: ChoiceVisual[]; visual_context?: VisualContext | null; scale: { left: string; right: string } | null; items: string[]; visual: "pulse" | "orbit" | "split" | "network" | "scale"; artifact?: GeneratedArtifact | null; token: string };
+type GeneratedArtifact = { medium: string; html: string; title: string; hint: string; verb: string; duration_seconds: number; accent: string; focus: string; can_commit: boolean };
+type EncounterOutcome = { id: string; label: string };
+type Encounter = { signal: string; question: string; interaction: Interaction; outcomes: EncounterOutcome[]; choices: string[]; choice_visuals?: ChoiceVisual[]; visual_context?: VisualContext | null; scale: { left: string; right: string } | null; items: string[]; visual: "pulse" | "orbit" | "split" | "network" | "scale"; artifact?: GeneratedArtifact | null; token: string };
 type Resolution = { verdict: Verdict; echo: string; answer_title: string; scene: string; explanation: string; terms: Array<{ term: string; meaning: string }>; why_it_matters: string; transfer: string; spark: Spark; profile_signal: string; source_note: string; next_nodes: NextNode[]; player_answer: string };
 type PanelStage = "summary" | "loading" | "observe" | "resolving" | "reveal";
 type EngineState = "checking" | "ready" | "offline";
@@ -210,7 +211,8 @@ function directionalTarget(currentId: string, candidates: AtlasNode[], positions
   return best?.id || null;
 }
 
-function playerAnswerFrom(payload: Record<string, unknown>) {
+function playerAnswerFrom(payload: Record<string, unknown>, encounter?: Encounter | null) {
+  if (typeof payload.outcome === "string") return encounter?.outcomes.find((item) => item.id === payload.outcome)?.label || "完成了一次观测";
   if (typeof payload.answer === "string") return payload.answer;
   if (typeof payload.value === "number") return `${payload.value}/100`;
   if (Array.isArray(payload.order)) return payload.order.join(" → ");
@@ -307,45 +309,59 @@ function ObservationInstrument({ encounter, scaleValue, arranged, selectedChoice
   </figure>;
 }
 
-function GeneratedWorld({ artifact, encounter, onCommit }: { artifact: GeneratedArtifact; encounter: Encounter; onCommit: (payload: Record<string, unknown>) => void }) {
+function GeneratedWorld({ artifact, encounter, onCommit, onFallback, onPulse }: { artifact: GeneratedArtifact; encounter: Encounter; onCommit: (payload: Record<string, unknown>) => void; onFallback: () => void; onPulse: () => void }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const commitRef = useRef(onCommit);
+  const pulseRef = useRef(onPulse);
+  const [progress, setProgress] = useState(0);
+  const [sceneKey, setSceneKey] = useState(0);
+  const [ready, setReady] = useState(false);
   useEffect(() => { commitRef.current = onCommit; }, [onCommit]);
+  useEffect(() => { pulseRef.current = onPulse; }, [onPulse]);
   useEffect(() => {
     function receiveArtifactAction(event: MessageEvent) {
       if (event.source !== frameRef.current?.contentWindow || !event.data || typeof event.data !== "object") return;
       const message = event.data as Record<string, unknown>;
-      if (message.source !== "spark-atlas-artifact" || message.type !== "commit") return;
-      if (encounter.interaction === "choice" && typeof message.answer === "string" && encounter.choices.includes(message.answer)) commitRef.current({ answer: message.answer });
-      else if (encounter.interaction === "scale" && Number.isFinite(Number(message.value))) commitRef.current({ value: Math.max(0, Math.min(100, Number(message.value))) });
-      else if (encounter.interaction === "arrange" && Array.isArray(message.order)) {
-        const order = message.order.slice(0, 3).map(String);
+      if (message.source !== "spark-atlas-runtime" && message.source !== "spark-atlas-artifact") return;
+      if (message.type === "ready") { setReady(true); return; }
+      if (message.type === "progress") { const value = Number(message.value ?? (message.payload as Record<string, unknown> | undefined)?.value); if (Number.isFinite(value)) setProgress(Math.max(0, Math.min(100, value))); return; }
+      if (message.type === "pulse") { pulseRef.current(); return; }
+      if (message.type !== "commit") return;
+      const payload = message.payload && typeof message.payload === "object" ? message.payload as Record<string, unknown> : message;
+      if (encounter.interaction === "world" && typeof payload.outcome === "string" && encounter.outcomes.some((item) => item.id === payload.outcome)) commitRef.current({ outcome: payload.outcome });
+      else if (encounter.interaction === "choice" && typeof payload.answer === "string" && encounter.choices.includes(payload.answer)) commitRef.current({ answer: payload.answer });
+      else if (encounter.interaction === "scale" && Number.isFinite(Number(payload.value))) commitRef.current({ value: Math.max(0, Math.min(100, Number(payload.value))) });
+      else if (encounter.interaction === "arrange" && Array.isArray(payload.order)) {
+        const order = payload.order.slice(0, 3).map(String);
         if (order.length === 3 && order.every((item) => encounter.items.includes(item))) commitRef.current({ order });
       }
     }
     window.addEventListener("message", receiveArtifactAction);
     return () => window.removeEventListener("message", receiveArtifactAction);
-  }, [encounter.choices, encounter.interaction, encounter.items]);
-  const srcDoc = useMemo(() => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; media-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none';"><style>:root{color-scheme:dark}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#080b08;color:#f2ebdc;font-family:Inter,'PingFang SC','Microsoft YaHei',sans-serif}button,input{font:inherit}button{color:inherit}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}</style></head><body>${artifact.html}</body></html>`, [artifact.html]);
-  return <figure className={`generated-world medium-${artifact.medium}`}>
-    <header><span><i aria-hidden="true" />AI 生成世界</span><b>{artifact.title}</b><small>{artifact.medium.toUpperCase()} · 本次实时生成</small></header>
-    <iframe ref={frameRef} title={`${artifact.title}互动知识可视化`} sandbox="allow-scripts" srcDoc={srcDoc} loading="eager" />
-    <figcaption><span>{artifact.hint}</span><small>{artifact.can_commit ? "完成世界里的操作即可提交判断；下方控制仍可备用。" : "先在世界里观察；再用下方通用控制留下判断。"}</small></figcaption>
+  }, [encounter.choices, encounter.interaction, encounter.items, encounter.outcomes]);
+  const runtime = `<script>(()=>{let audio;const send=(type,payload={})=>parent.postMessage({source:'spark-atlas-runtime',type,...(type==='progress'?{value:payload.value}:{}),payload},'*');const api={version:'2.0',ready:()=>send('ready'),progress:value=>send('progress',{value}),pulse:()=>send('pulse'),commit:payload=>send('commit',payload),tone:(frequency=440,duration=.08,gain=.025)=>{try{audio=audio||new AudioContext();const oscillator=audio.createOscillator(),volume=audio.createGain();oscillator.frequency.value=Math.max(40,Math.min(1600,frequency));volume.gain.setValueAtTime(Math.max(0,Math.min(.08,gain)),audio.currentTime);volume.gain.exponentialRampToValueAtTime(.0001,audio.currentTime+duration);oscillator.connect(volume).connect(audio.destination);oscillator.start();oscillator.stop(audio.currentTime+duration)}catch{}}};Object.defineProperty(window,'SparkRuntime',{value:Object.freeze(api),writable:false});addEventListener('DOMContentLoaded',()=>api.ready(),{once:true})})();</script>`;
+  const srcDoc = useMemo(() => `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; media-src data: blob:; worker-src blob:; font-src 'none'; object-src 'none'; frame-src 'none';"><style>:root{color-scheme:dark;--spark-accent:${artifact.accent}}*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#050805;color:#f2ebdc;font-family:Inter,'PingFang SC','Microsoft YaHei',sans-serif;touch-action:manipulation}button,input{font:inherit}button{color:inherit}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}</style>${runtime}</head><body>${artifact.html}</body></html>`, [artifact.accent, artifact.html, runtime]);
+  return <figure className={`generated-world medium-${artifact.medium}`} style={{ "--scene-accent": artifact.accent } as CSSProperties}>
+    <header><span><i aria-hidden="true" />{ready ? "LIVE" : "BOOT"}</span><b>{artifact.title}</b><div><small>约 {artifact.duration_seconds} 秒</small><button type="button" onClick={() => { setProgress(0); setReady(false); setSceneKey((key) => key + 1); }} aria-label="重新开始这个世界">↻</button><button type="button" onClick={onFallback}>简易操作</button></div></header>
+    <div className="generated-stage"><iframe key={sceneKey} ref={frameRef} title={`${artifact.title}互动知识世界`} sandbox="allow-scripts" srcDoc={srcDoc} loading="eager" /><div className="scene-verb"><span>{artifact.verb}</span><b>{artifact.hint}</b></div></div>
+    <figcaption><span><i style={{ width: `${progress}%` }} /></span><small>{progress > 0 ? `${Math.round(progress)}%` : "亲手改变世界，答案才会出现"}</small></figcaption>
   </figure>;
 }
 
 function KnowledgeArticle({ record, onRoute, onReplay, live }: { record: KnowledgeRecord; onRoute: (route: NextNode) => void; onReplay: () => void; live?: boolean }) {
   const verdictCopy = record.verdict === "hit" ? { label: "命中", title: "你抓住了关键关系" } : record.verdict === "near" ? { label: "接近", title: "方向对了，还差一个变量" } : { label: "反转", title: "现实让直觉拐了个弯" };
   return <article className={`sheet-reveal ${live ? "live" : "memory"}`}>
-    <header className={`verdict-banner verdict-${record.verdict}`}><span>{verdictCopy.label}</span><div><b>{verdictCopy.title}</b><p>{live ? record.echo : "这次判断已经留在你的星图里"}</p></div></header>
-    <div className="answer-contrast"><section><small>你押下的答案</small><b>{record.playerAnswer}</b></section><i aria-hidden="true">→</i><section><small>现实里的关系</small><h2>{record.answerTitle}</h2></section></div>
-    <aside className="question-upgrade"><small>你刚刚获得的新问题</small><p>{record.whyItMatters}</p></aside>
-    <section className="knowledge-scene"><small>把现场放到眼前</small><p>{record.scene}</p></section>
-    <section className="knowledge-explanation"><small>它为什么会这样</small><p>{record.explanation}</p></section>
-    {record.transfer ? <aside className="transfer-card"><small>把这个模型带回日常</small><p>{record.transfer}</p></aside> : null}
-    {record.terms.length ? <section className="term-shelf"><small>只记住这两个词</small><div>{record.terms.map((item) => <dl key={item.term}><dt>{item.term}</dt><dd>{item.meaning}</dd></dl>)}</div></section> : null}
-    <details className="fact-boundary"><summary>依据与边界</summary><span>{record.sourceNote}</span></details>
-    <div className="departures"><header><span>这个问题还能把你带到哪里？</span><small>只取一条路</small></header>{record.nextNodes.map((route) => <button type="button" key={`${route.kind}-${route.name}`} onClick={() => onRoute(route)}><small>{route.kind === "deeper" ? "继续追问" : route.kind === "bridge" ? "换个角度" : "跳到远处"}</small><b>{route.name}</b><span>{route.promise}</span></button>)}</div>
+    <header className={`verdict-stage verdict-${record.verdict}`}><span><i aria-hidden="true" />{verdictCopy.label}</span><div><small>{verdictCopy.title}</small><h2>{record.answerTitle}</h2><p>{live ? record.echo : "已经收入你的星图"}</p></div></header>
+    <div className="result-ribbon"><small>你的动作</small><b>{record.playerAnswer}</b><i aria-hidden="true">→</i><span>现实回应</span></div>
+    <aside className="question-upgrade"><small>获得一个新问题</small><p>{record.whyItMatters}</p></aside>
+    <div className="departures"><header><span>下一跳</span><small>选一颗，星图会长出新线</small></header><div>{record.nextNodes.map((route, index) => <button type="button" key={`${route.kind}-${route.name}`} onClick={() => onRoute(route)} aria-label={`${route.name}：${route.promise}`}><i aria-hidden="true"><b>{index + 1}</b></i><small>{route.kind === "deeper" ? "深入" : route.kind === "bridge" ? "横渡" : "跃迁"}</small><strong>{route.name}</strong></button>)}</div></div>
+    <details className="knowledge-vault"><summary><span><b>看懂为什么</b><small>现场 · 解释 · 迁移 · 边界</small></span><i aria-hidden="true">＋</i></summary><div>
+      <section className="knowledge-scene"><small>现场</small><p>{record.scene}</p></section>
+      <section className="knowledge-explanation"><small>关系</small><p>{record.explanation}</p></section>
+      {record.transfer ? <aside className="transfer-card"><small>迁移</small><p>{record.transfer}</p></aside> : null}
+      {record.terms.length ? <section className="term-shelf"><small>两个词</small><div>{record.terms.map((item) => <dl key={item.term}><dt>{item.term}</dt><dd>{item.meaning}</dd></dl>)}</div></section> : null}
+      <p className="fact-boundary"><b>依据与边界</b><span>{record.sourceNote}</span></p>
+    </div></details>
     {!live ? <button className="reobserve-link" type="button" onClick={onReplay}>换一种方式再次观测</button> : null}
   </article>;
 }
@@ -360,6 +376,7 @@ export function CuriosityGame() {
   const [scaleValue, setScaleValue] = useState(50);
   const [arranged, setArranged] = useState<string[]>([]);
   const [hypothesisIndex, setHypothesisIndex] = useState<number | null>(null);
+  const [fallbackOpen, setFallbackOpen] = useState(false);
   const [charting, setCharting] = useState(false);
   const [activeSector, setActiveSector] = useState<SectorKey | "all">("all");
   const [inspectedId, setInspectedId] = useState<string | null>(null);
@@ -425,6 +442,7 @@ export function CuriosityGame() {
   const activeSectorInfo = activeSector === "all" ? null : sectorInfo(activeSector);
   const overlayKey = resetOpen ? "reset" : volumeReveal ? "volume" : constellationReveal ? "constellation" : archiveOpen ? "archive" : selectedId ? "observation" : introOpen && storageReady ? "intro" : "";
   const latestProfile = atlas.profileSignals.at(-1) || "你的好奇心轮廓会随着探索逐渐显影";
+  const fallbackVisible = Boolean(encounter && (!encounter.artifact?.can_commit || fallbackOpen));
 
   useEffect(() => {
     try {
@@ -460,7 +478,7 @@ export function CuriosityGame() {
 
   function mapContext() { return { discovered: discovered.map((node) => node.name), frontier: frontiers.map((node) => node.name), fields: [...discoveredFields] }; }
   function haptic(pattern: number | number[] = 10) { if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(pattern); }
-  function clearObservation() { setEncounter(null); setResolution(null); setArranged([]); setScaleValue(50); setHypothesisIndex(null); }
+  function clearObservation() { setEncounter(null); setResolution(null); setArranged([]); setScaleValue(50); setHypothesisIndex(null); setFallbackOpen(false); }
   function closeObservation() { requestSerial.current += 1; setSelectedId(null); setStage("summary"); clearObservation(); }
   function closeTopOverlay() {
     if (resetOpen) setResetOpen(false);
@@ -553,8 +571,8 @@ export function CuriosityGame() {
     try {
       const data = await atlasRequest({ mode: "resolve", token: encounter.token, ...payload });
       if (requestId !== requestSerial.current) return;
-      const resolved = { ...(data as Omit<Resolution, "player_answer">), player_answer: playerAnswerFrom(payload) } as Resolution;
-      const knowledge: KnowledgeRecord = { signal: encounter.signal, question: encounter.question, playerAnswer: playerAnswerFrom(payload), verdict: resolved.verdict, echo: resolved.echo, answerTitle: resolved.answer_title, scene: resolved.scene, explanation: resolved.explanation, terms: resolved.terms, whyItMatters: resolved.why_it_matters, transfer: resolved.transfer, sourceNote: resolved.source_note, nextNodes: resolved.next_nodes, discoveredAt: atlas.expeditions + 1 };
+      const resolved = { ...(data as Omit<Resolution, "player_answer">), player_answer: playerAnswerFrom(payload, encounter) } as Resolution;
+      const knowledge: KnowledgeRecord = { signal: encounter.signal, question: encounter.question, playerAnswer: playerAnswerFrom(payload, encounter), verdict: resolved.verdict, echo: resolved.echo, answerTitle: resolved.answer_title, scene: resolved.scene, explanation: resolved.explanation, terms: resolved.terms, whyItMatters: resolved.why_it_matters, transfer: resolved.transfer, sourceNote: resolved.source_note, nextNodes: resolved.next_nodes, discoveredAt: atlas.expeditions + 1 };
       setAtlas((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === selectedNode.id ? { ...node, status: "discovered" as const, spark: resolved.spark, knowledge } : node), profileSignals: [...current.profileSignals, resolved.profile_signal].slice(-12), expeditions: current.expeditions + 1, trail: [...current.trail, selectedNode.id].slice(-60) }));
       setNewNodeIds([selectedNode.id]); setStructureLens("point"); setResolution(resolved); setStage("reveal"); haptic([10, 45, 18]);
     } catch (error) { if (requestId !== requestSerial.current) return; setToast(error instanceof Error ? error.message : "这页档案没有写完，请再试一次"); setStage("observe"); }
@@ -738,19 +756,10 @@ export function CuriosityGame() {
         <button type="button" className="quiet-close" onClick={() => setIntroOpen(false)} aria-label="关闭序言">×</button>
         <p className="intro-kicker">百门计划 · AI 时代的通识实验</p>
         <h2 id="intro-heading">AI 能回答几乎一切。<br /><em>但它不能替你拥有问题。</em></h2>
-        <p className="intro-lede">你被一个专业录取，只是从一扇门出发。一个从未接触过的领域，对你不只是“没有答案”——它甚至不会产生问题。星火档案要做的，是把 100 个陌生世界变成 100 个可以继续追问的起点。</p>
-        <section className="intro-example" aria-labelledby="intro-example-title">
-          <header><small>比如，你问</small><b id="intro-example-title">“为什么刷短视频，总是停不下来？”</b></header>
-          <div>
-            <article><small>神经科学</small><p>大脑怎样学会期待下一次奖励？</p></article>
-            <article><small>行为经济学</small><p>眼前的快乐为什么会压过长期目标？</p></article>
-            <article><small>产品设计</small><p>无限滚动怎样拿走了“停下”的时刻？</p></article>
-          </div>
-          <footer>你不必先学完三门课。只要知道这些门存在，就能带着更好的问题调用 AI。</footer>
-        </section>
-        <div className="intro-principle"><span><b>100</b><small>种问世界的方法</small></span><p>不是囤积 100 篇答案。AI 会为每个问题临时写出一个可操作的代码世界；你负责观察、判断和选择，让知识从点长成可以迁移的世界模型。</p></div>
-        <ol aria-label="知识从点生长为世界模型"><li><b>点</b><span>一次观测，获得一个能继续提问的入口</span></li><li><b>线</b><span>一次选择，说清两个世界为何相连</span></li><li><b>面</b><span>三个问题闭合，得到新的共同解释</span></li><li><b>体</b><span>三张解释面支撑出可迁移的思考工具</span></li></ol>
-        <div className="intro-outcome"><small>玩完之后，你得到的不是“看过很多”</small><b>而是知道世界有哪些入口、自己对什么真正心动、下一步该往哪里走。</b></div>
+        <p className="intro-lede">你被一个专业录取，只是从一扇门出发。这里把陌生知识变成能亲手玩的世界，让你获得原本问不出来的问题。</p>
+        <section className="intro-orbit" aria-labelledby="intro-example-title"><div className="intro-question"><small>一个真实困惑</small><b id="intro-example-title">为什么刷短视频，总是停不下来？</b><i aria-hidden="true" /></div><div className="intro-worlds" aria-label="一个问题可以打开三个知识世界"><span><i />神经科学</span><span><i />行为经济学</span><span><i />产品设计</span></div><p>不用先学三门课。玩过一次，你就知道该向 AI 追问什么。</p></section>
+        <div className="intro-principle"><span><b>100</b><small>个提问起点</small></span><div className="dimension-sequence" aria-label="知识从点生长为世界模型"><i><b>点</b></i><em /><i><b>线</b></i><em /><i><b>面</b></i><em /><i><b>体</b></i></div></div>
+        <div className="intro-outcome"><small>每次只做一件事</small><b>进入一个世界，动手改变它，然后决定下一跳。</b></div>
         <div className="intro-footer"><button type="button" className="intro-start" onClick={() => { setIntroOpen(false); if (recommended) chooseSector(sectorFor(recommended), recommended.id); }}>去获得第 1 个提问起点</button><div className="intro-controls"><span><kbd>WASD</kbd> 航行</span><span><kbd>Enter</kbd> 观测</span><span>手机滑动选星</span></div></div>
       </section></div> : null}
 
@@ -761,19 +770,18 @@ export function CuriosityGame() {
           {stage === "summary" && selectedNode.knowledge ? <KnowledgeArticle record={selectedNode.knowledge} onRoute={chooseRoute} onReplay={() => launchEncounter(selectedNode)} /> : null}
           {stage === "summary" && !selectedNode.knowledge ? <div className="sheet-summary"><small>{selectedNode.status === "origin" ? "天球中心" : "旧档案 · 只留下了一条结论"}</small><h2>{selectedNode.name}</h2><p>{selectedNode.spark?.insight || selectedNode.hook}</p>{selectedNode.status !== "origin" ? <><span className="legacy-note">再次观测后，这里会保存完整现场、白话解释、术语与事实边界。</span><button className="ink-action" type="button" onClick={() => launchEncounter(selectedNode)} disabled={engine !== "ready"}>补全这页知识档案</button></> : <button className="ink-action" type="button" onClick={closeObservation}>返回天球</button>}</div> : null}
 
-          {stage === "loading" ? <div className="sheet-loading"><div className="orrery" aria-hidden="true"><i /><i /><b /></div><small>AI 正在生成一次只属于这颗星的观测</small><p>{WAIT_COPY.loading[waitBeat]}</p><ol>{WAIT_COPY.loading.map((item, index) => <li className={index <= waitBeat ? "active" : ""} key={item}>{item}</li>)}</ol></div> : null}
+          {stage === "loading" ? <div className="sheet-loading"><div className="scene-forge" aria-hidden="true"><i /><i /><i /><b /></div><small>AI 正在写这个世界</small><p>{WAIT_COPY.loading[waitBeat]}</p><span>代码、画面与规则同时生成</span></div> : null}
 
           {stage === "observe" && encounter ? <div className="sheet-observe">
-            <p className="observation-line">{encounter.signal}</p>
-            <h2>{encounter.question}</h2>
-            <p className="observation-instruction">先在这个由 AI 临时写出的世界里观察、拖动或比较。这里不考记忆，只看你会押哪一种关系。</p>
-            {encounter.artifact ? <GeneratedWorld artifact={encounter.artifact} encounter={encounter} onCommit={resolveObservation} /> : <ObservationInstrument encounter={encounter} scaleValue={scaleValue} arranged={arranged} selectedChoice={hypothesisIndex} />}
-            {encounter.interaction === "choice" ? <div className="choice-console"><div className="observation-choices" role="group" aria-label="选择一条变化假设">{encounter.choices.map((choice, index) => <button className={hypothesisIndex === index ? "selected" : ""} aria-pressed={hypothesisIndex === index} key={choice} type="button" onClick={() => { setHypothesisIndex(index); haptic(6); }}><i className={`hypothesis-swatch swatch-${index + 1}`} aria-hidden="true" /><span><small>假设 0{index + 1}</small><b>{choice}</b></span></button>)}</div><button className="hypothesis-lock" type="button" disabled={hypothesisIndex === null} onClick={() => { if (hypothesisIndex !== null) resolveObservation({ answer: encounter.choices[hypothesisIndex] }); }}>{hypothesisIndex === null ? "先检视并选择一条轨迹" : `锁定 0${hypothesisIndex + 1} · ${encounter.choices[hypothesisIndex]}`}</button></div> : null}
-            {encounter.interaction === "scale" && encounter.scale ? <div className="scale-observation"><input type="range" min="0" max="100" value={scaleValue} onChange={(event) => setScaleValue(Number(event.target.value))} aria-label={`在${encounter.scale.left}与${encounter.scale.right}之间估计`} /><div><span>{encounter.scale.left}</span><i style={{ left: `${scaleValue}%` }} /><b>{scaleValue}</b><span>{encounter.scale.right}</span></div><button type="button" onClick={() => resolveObservation({ value: scaleValue })}>把判断定在这里</button></div> : null}
-            {encounter.interaction === "arrange" ? <div className="arrange-observation"><div className="arranged-slots">{[0,1,2].map((index) => arranged[index] ? <button type="button" key={index} onClick={() => pickArrangeItem(arranged[index])} aria-label={`移除第${index + 1}位：${arranged[index]}`}><small>0{index + 1}</small><span>{arranged[index]}</span></button> : <span key={index}><small>0{index + 1}</small><i>等待放入</i></span>)}</div><div className="arrange-items">{encounter.items.map((item) => <button key={item} type="button" className={arranged.includes(item) ? "used" : ""} disabled={arranged.includes(item)} onClick={() => pickArrangeItem(item)}>{item}</button>)}</div><button className="ink-action" type="button" disabled={arranged.length !== 3} onClick={() => resolveObservation({ order: arranged })}>按这个顺序归档</button></div> : null}
+            <header className="observation-prompt"><span>{encounter.signal}</span><h2>{encounter.question}</h2></header>
+            {encounter.artifact ? <GeneratedWorld key={encounter.token} artifact={encounter.artifact} encounter={encounter} onCommit={resolveObservation} onFallback={() => setFallbackOpen((open) => !open)} onPulse={() => haptic(6)} /> : <ObservationInstrument encounter={encounter} scaleValue={scaleValue} arranged={arranged} selectedChoice={hypothesisIndex} />}
+            {fallbackVisible && encounter.interaction === "world" ? <div className="world-fallback"><small>场景没有响应？直接留下你看到的结果</small><div>{encounter.outcomes.map((outcome, index) => <button key={outcome.id} type="button" onClick={() => resolveObservation({ outcome: outcome.id })}><i>0{index + 1}</i><b>{outcome.label}</b></button>)}</div></div> : null}
+            {fallbackVisible && encounter.interaction === "choice" ? <div className="choice-console"><div className="observation-choices" role="group" aria-label="选择一条变化假设">{encounter.choices.map((choice, index) => <button className={hypothesisIndex === index ? "selected" : ""} aria-pressed={hypothesisIndex === index} key={choice} type="button" onClick={() => { setHypothesisIndex(index); haptic(6); }}><i className={`hypothesis-swatch swatch-${index + 1}`} aria-hidden="true" /><span><small>假设 0{index + 1}</small><b>{choice}</b></span></button>)}</div><button className="hypothesis-lock" type="button" disabled={hypothesisIndex === null} onClick={() => { if (hypothesisIndex !== null) resolveObservation({ answer: encounter.choices[hypothesisIndex] }); }}>{hypothesisIndex === null ? "先选一条轨迹" : `锁定 0${hypothesisIndex + 1}`}</button></div> : null}
+            {fallbackVisible && encounter.interaction === "scale" && encounter.scale ? <div className="scale-observation"><input type="range" min="0" max="100" value={scaleValue} onChange={(event) => setScaleValue(Number(event.target.value))} aria-label={`在${encounter.scale.left}与${encounter.scale.right}之间估计`} /><div><span>{encounter.scale.left}</span><i style={{ left: `${scaleValue}%` }} /><b>{scaleValue}</b><span>{encounter.scale.right}</span></div><button type="button" onClick={() => resolveObservation({ value: scaleValue })}>锁定</button></div> : null}
+            {fallbackVisible && encounter.interaction === "arrange" ? <div className="arrange-observation"><div className="arranged-slots">{[0,1,2].map((index) => arranged[index] ? <button type="button" key={index} onClick={() => pickArrangeItem(arranged[index])} aria-label={`移除第${index + 1}位：${arranged[index]}`}><small>0{index + 1}</small><span>{arranged[index]}</span></button> : <span key={index}><small>0{index + 1}</small><i>等待放入</i></span>)}</div><div className="arrange-items">{encounter.items.map((item) => <button key={item} type="button" className={arranged.includes(item) ? "used" : ""} disabled={arranged.includes(item)} onClick={() => pickArrangeItem(item)}>{item}</button>)}</div><button className="ink-action" type="button" disabled={arranged.length !== 3} onClick={() => resolveObservation({ order: arranged })}>锁定顺序</button></div> : null}
           </div> : null}
 
-          {stage === "resolving" ? <div className="sheet-loading resolving"><div className="orrery" aria-hidden="true"><i /><i /><b /></div><small>你的判断正在变成一页知识</small><p>{WAIT_COPY.resolving[waitBeat]}</p><ol>{WAIT_COPY.resolving.map((item, index) => <li className={index <= waitBeat ? "active" : ""} key={item}>{item}</li>)}</ol></div> : null}
+          {stage === "resolving" ? <div className="sheet-loading resolving"><div className="scene-forge resolving" aria-hidden="true"><i /><i /><i /><b /></div><small>世界正在回应你的动作</small><p>{WAIT_COPY.resolving[waitBeat]}</p><span>完成后会点亮一颗新星</span></div> : null}
           {stage === "reveal" && liveKnowledge ? <KnowledgeArticle record={liveKnowledge} onRoute={chooseRoute} onReplay={() => launchEncounter(selectedNode)} live /> : null}
         </div>
       </section> : null}
